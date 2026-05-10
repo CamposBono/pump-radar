@@ -8,33 +8,37 @@ from datetime import datetime
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-# FILTROS DE CALIDAD
-MIN_MARKET_CAP = 50_000_000      # Mínimo $50M de capitalización
-MIN_VOLUME = 1_000_000           # Mínimo $1M de volumen diario
-MAX_24H_CHANGE = 25              # Si ya subió más de 25% en 24h, descartamos
+MIN_MARKET_CAP = 100_000_000     # Mínimo $100M
+MIN_VOLUME = 2_000_000           # Mínimo $2M volumen diario
+MAX_24H_CHANGE = 30              # Descarta si ya subió +30%
 
 def send_message(text):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     requests.post(url, json={"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"})
 
 def get_coins():
-    try:
-        r = requests.get(
-            "https://api.coingecko.com/api/v3/coins/markets",
-            params={
-                "vs_currency": "usd",
-                "order": "volume_desc",
-                "per_page": 150,
-                "page": 1,
-                "price_change_percentage": "1h,24h,7d"
-            },
-            timeout=15
-        )
-        return r.json() if r.ok else []
-    except:
-        return []
+    all_coins = []
+    for page in [1, 2, 3]:
+        try:
+            r = requests.get(
+                "https://api.coingecko.com/api/v3/coins/markets",
+                params={
+                    "vs_currency": "usd",
+                    "order": "market_cap_desc",
+                    "per_page": 100,
+                    "page": page,
+                    "price_change_percentage": "1h,24h,7d"
+                },
+                timeout=15
+            )
+            if r.ok:
+                all_coins.extend(r.json())
+            time.sleep(1)
+        except:
+            pass
+    return all_coins
 
-def calc_early_signal(coin):
+def calc_signal(coin):
     score = 0
     signals = []
 
@@ -44,17 +48,23 @@ def calc_early_signal(coin):
     h24 = coin.get("price_change_percentage_24h") or 0
     h7d = coin.get("price_change_percentage_7d_in_currency") or 0
 
-    # FILTROS DE CALIDAD — descartar monedas dudosas
+    # Filtros de calidad
     if mcap < MIN_MARKET_CAP:
-        return 0, [], False
+        return 0, [], "none"
     if volume < MIN_VOLUME:
-        return 0, [], False
+        return 0, [], "none"
     if h24 > MAX_24H_CHANGE:
-        return 0, [], False
+        return 0, [], "none"
 
     vol_ratio = volume / mcap
 
-    # SEÑAL TEMPRANA: volumen sube pero precio quieto (acumulación)
+    # Determinar estrategia recomendada
+    if mcap > 5_000_000_000:
+        estrategia = "pionex"   # Large cap → bot Pionex
+    else:
+        estrategia = "spot"     # Mid/Small cap → spot manual
+
+    # SEÑAL TEMPRANA: volumen sube, precio quieto
     early = False
     if vol_ratio > 0.3 and abs(h1) < 3:
         score += 40
@@ -62,89 +72,111 @@ def calc_early_signal(coin):
         early = True
 
     if vol_ratio > 0.5 and abs(h1) < 5:
-        score += 20
-        signals.append("⚡ Volumen extremo sin movimiento")
+        score += 15
+        signals.append("⚡ Volumen extremo")
         early = True
 
-    # Moneda dormida que despertó esta semana
+    # Moneda dormida que despertó
     if abs(h7d) < 8 and vol_ratio > 0.2 and h24 > 3:
         score += 20
         signals.append("😴 Dormida 7d, activa hoy")
         early = True
 
-    # Inicio de movimiento moderado (no demasiado tarde)
-    if h1 > 2 and h1 < 7 and vol_ratio > 0.15:
+    # Inicio de movimiento moderado
+    if 2 < h1 < 8 and vol_ratio > 0.15:
         score += 20
         signals.append(f"🌱 Inicio +{h1:.1f}% en 1h")
 
-    if h24 > 5 and h24 < 20 and vol_ratio > 0.1:
+    if 5 < h24 < 25 and vol_ratio > 0.1:
         score += 15
         signals.append(f"📈 +{h24:.1f}% en 24h")
 
-    # Bonus por tamaño (más seguro)
-    if mcap > 500_000_000:
+    # Bonus por tamaño
+    if mcap > 5_000_000_000:
         score += 8
-        signals.append("🏦 Mid/Large cap")
-    elif mcap > 100_000_000:
+        signals.append("🏦 Large cap — muy líquido")
+    elif mcap > 500_000_000:
         score += 5
-        signals.append("🔹 Small cap sólido")
+        signals.append("🔹 Mid cap sólido")
 
     score = max(0, min(100, score))
-    return score, signals, early
+    return score, signals, estrategia
 
 def analyze_market():
-    print(f"[{datetime.now().strftime('%H:%M')}] Analizando...")
+    print(f"[{datetime.now().strftime('%H:%M')}] Analizando top 300...")
     coins = get_coins()
     if not coins:
         print("Sin datos")
         return
 
-    results = []
+    pionex_results = []
+    spot_results = []
+
     for coin in coins:
-        score, signals, early = calc_early_signal(coin)
-        if score >= 45:
-            results.append((score, coin, signals, early))
+        score, signals, estrategia = calc_signal(coin)
+        if score >= 40:
+            if estrategia == "pionex":
+                pionex_results.append((score, coin, signals))
+            elif estrategia == "spot":
+                spot_results.append((score, coin, signals))
 
-    # Ordenar: primero señales tempranas, luego por score
-    results.sort(key=lambda x: (x[3], x[0]), reverse=True)
-    top = results[:3]
+    pionex_results.sort(key=lambda x: x[0], reverse=True)
+    spot_results.sort(key=lambda x: x[0], reverse=True)
 
-    if not top:
+    top_pionex = pionex_results[:2]
+    top_spot = spot_results[:3]
+
+    if not top_pionex and not top_spot:
         print("Sin señales suficientes")
         return
 
     hora = datetime.now().strftime('%H:%M')
-    msg = f"🔍 *PUMP RADAR — {hora}*\n_Top {len(top)} señales — cap mín $50M_\n\n"
+    msg = f"🔍 *PUMP RADAR — {hora}*\n_Cap mín $100M | Top 300_\n\n"
 
-    for score, coin, signals, early in top:
-        symbol = coin.get("symbol", "").upper()
-        name = coin.get("name", "")
-        price = coin.get("current_price", 0)
-        h1 = coin.get("price_change_percentage_1h_in_currency") or 0
-        h24 = coin.get("price_change_percentage_24h") or 0
-        mcap = coin.get("market_cap") or 0
+    if top_spot:
+        msg += "📈 *SPOT — Compra manual*\n"
+        msg += "_BingX / Bitget / Nexo_\n\n"
+        for score, coin, signals in top_spot:
+            symbol = coin.get("symbol", "").upper()
+            name = coin.get("name", "")
+            price = coin.get("current_price", 0)
+            h1 = coin.get("price_change_percentage_1h_in_currency") or 0
+            h24 = coin.get("price_change_percentage_24h") or 0
+            mcap = coin.get("market_cap") or 0
+            mcap_str = f"${mcap/1_000_000:.0f}M" if mcap < 1_000_000_000 else f"${mcap/1_000_000_000:.1f}B"
 
-        emoji = "🎯" if early else ("🔴" if score >= 60 else "🟠")
-        tipo = "SEÑAL TEMPRANA" if early else ("SEÑAL FUERTE" if score >= 60 else "SEÑAL MODERADA")
+            if price > 1:
+                price_str = f"${price:,.3f}"
+            elif price > 0.01:
+                price_str = f"${price:,.5f}"
+            else:
+                price_str = f"${price:,.8f}"
 
-        if price > 1:
-            price_str = f"${price:,.4f}"
-        elif price > 0.01:
-            price_str = f"${price:,.6f}"
-        else:
-            price_str = f"${price:,.8f}"
+            msg += f"🟢 *{symbol}* ({name})\n"
+            msg += f"Score: *{score}/100* | Cap: `{mcap_str}`\n"
+            msg += f"Precio: `{price_str}` | 1h: `{h1:+.2f}%` | 24h: `{h24:+.2f}%`\n"
+            msg += f"_{', '.join(signals)}_\n\n"
 
-        mcap_str = f"${mcap/1_000_000:.0f}M" if mcap < 1_000_000_000 else f"${mcap/1_000_000_000:.1f}B"
+    if top_pionex:
+        msg += "🤖 *PIONEX BOT — Grid trading*\n"
+        msg += "_Large cap estables_\n\n"
+        for score, coin, signals in top_pionex:
+            symbol = coin.get("symbol", "").upper()
+            name = coin.get("name", "")
+            price = coin.get("current_price", 0)
+            h1 = coin.get("price_change_percentage_1h_in_currency") or 0
+            h24 = coin.get("price_change_percentage_24h") or 0
+            mcap = coin.get("market_cap") or 0
+            mcap_str = f"${mcap/1_000_000_000:.1f}B"
 
-        msg += f"{emoji} *{symbol}* ({name}) — {tipo}\n"
-        msg += f"Score: *{score}/100* | Cap: `{mcap_str}`\n"
-        msg += f"Precio: `{price_str}`\n"
-        msg += f"1h: `{h1:+.2f}%` | 24h: `{h24:+.2f}%`\n"
-        msg += f"_{', '.join(signals)}_\n\n"
+            msg += f"🔵 *{symbol}* ({name})\n"
+            msg += f"Score: *{score}/100* | Cap: `{mcap_str}`\n"
+            msg += f"Precio: `${price:,.4f}` | 1h: `{h1:+.2f}%` | 24h: `{h24:+.2f}%`\n"
+            msg += f"_{', '.join(signals)}_\n\n"
 
     msg += "⚠️ _Experimental. No es asesoramiento financiero._"
     send_message(msg)
-    print(f"Enviadas {len(top)} alertas")
+    print(f"Enviadas: {len(top_spot)} spot, {len(top_pionex)} pionex")
 
 def handle_updates():
     last_update = 0
@@ -159,44 +191,41 @@ def handle_updates():
                     if text == "/start":
                         send_message(
                             "👋 *Pump Radar activo*\n\n"
-                            "Detecto señales tempranas en monedas con cap mínimo $50M.\n"
-                            "Sin shitcoins, sin monedas dudosas.\n\n"
+                            "Analizo el top 300 con cap mínimo $100M.\n\n"
+                            "🟢 *SPOT* — para BingX, Bitget, Nexo\n"
+                            "🔵 *PIONEX BOT* — large caps para grid trading\n\n"
                             "/analizar — análisis ahora\n"
-                            "/ayuda — cómo interpretar las señales"
+                            "/ayuda — cómo operar"
                         )
                     elif text == "/analizar":
-                        send_message("🔍 Analizando mercado...")
+                        send_message("🔍 Analizando top 300...")
                         analyze_market()
                     elif text == "/ayuda":
                         send_message(
-                            "*Cómo interpretar:*\n\n"
-                            "🎯 *SEÑAL TEMPRANA*\n"
-                            "Volumen subiendo pero precio quieto.\n"
-                            "Alguien está comprando antes del movimiento.\n"
-                            "→ Mejor momento para entrar\n\n"
-                            "🔴 *SEÑAL FUERTE*\n"
-                            "Movimiento iniciado con fuerza.\n"
-                            "→ Todavía puede tener recorrido\n\n"
-                            "🟠 *SEÑAL MODERADA*\n"
-                            "Actividad interesante, seguir de cerca.\n\n"
-                            "*Filtros activos:*\n"
-                            "✅ Cap mínimo $50M\n"
-                            "✅ Volumen mínimo $1M\n"
-                            "✅ Descarta monedas que ya subieron +25%\n\n"
-                            "_Verificá siempre en CoinMarketCap antes de invertir._"
+                            "*Cómo operar con las señales:*\n\n"
+                            "🟢 *SPOT en BingX/Bitget/Nexo*\n"
+                            "1. Verificá que la moneda está disponible\n"
+                            "2. Entrás con el monto que querés arriesgar\n"
+                            "3. Ponés orden de venta en +15% a +25%\n"
+                            "4. Stop loss en -8% para protegerte\n\n"
+                            "🔵 *PIONEX BOT*\n"
+                            "1. Abrís grid bot en Pionex\n"
+                            "2. Elegís la moneda detectada\n"
+                            "3. El bot compra y vende solo en el rango\n\n"
+                            "⚠️ _Empezá con montos pequeños mientras probás._"
                         )
         except Exception as e:
             print(f"Error: {e}")
         time.sleep(2)
 
 def main():
-    print("🚀 Pump Radar iniciado — filtro $50M activado")
+    print("🚀 Pump Radar iniciado — top 300, cap mín $100M")
     send_message(
-        "✅ *Bot actualizado — Filtro de calidad activo*\n\n"
-        "Ahora solo analizo monedas con:\n"
-        "• Cap mínimo $50M\n"
-        "• Volumen mínimo $1M\n"
-        "• Sin monedas que ya subieron +25%\n\n"
+        "✅ *Pump Radar actualizado*\n\n"
+        "• Analizo top 300 por market cap\n"
+        "• Cap mínimo $100M\n"
+        "• Volumen mínimo $2M\n"
+        "• Separado: Spot vs Pionex Bot\n\n"
         "Escribí /analizar para ver las primeras señales."
     )
     schedule.every(1).hours.do(analyze_market)
