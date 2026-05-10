@@ -77,7 +77,7 @@ def analyze_market():
     results = []
     for coin in coins:
         score, reasons = calc_score(coin)
-        if score >= 60:
+        if score >= 40:
             results.append((score, coin, reasons))
 
     results.sort(key=lambda x: x[0], reverse=True)
