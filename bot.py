@@ -1,9 +1,4 @@
-import os
-import requests
-import time
-import schedule
-import threading
-from datetime import datetime
+
 
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
