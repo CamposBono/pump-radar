@@ -8,35 +8,54 @@ from datetime import datetime
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-MIN_MARKET_CAP_SPOT = 100_000_000
-MIN_MARKET_CAP_GRID = 5_000_000_000
-MIN_MARKET_CAP_SHORT = 200_000_000
-MIN_VOLUME = 2_000_000
+MIN_MARKET_CAP_SPOT = 300_000_000    # $300M mínimo para spot
+MIN_MARKET_CAP_GRID = 5_000_000_000  # $5B para Pionex grid
+MIN_MARKET_CAP_SHORT = 500_000_000   # $500M para futuros short
+MIN_VOLUME = 5_000_000               # $5M volumen mínimo
 
-# Filtro de stablecoins y tokens no deseados
-STABLECOINS = {
+# Stablecoins y tokens no deseados
+BLACKLIST_SYMBOLS = {
+    # Stablecoins
     "usdt", "usdc", "busd", "dai", "tusd", "usdp", "usdd", "gusd", "frax",
     "lusd", "susd", "cusd", "husd", "eurs", "rusd", "pyusd", "fdusd",
-    "usde", "usdx", "crvusd", "gho", "mkr", "mim", "usdn", "ousd",
-    "alusd", "dola", "bean", "usd+", "tbtc", "wbtc", "steth", "weth",
-    "cbeth", "reth", "sfrxeth", "weeth", "ezeth", "rseth", "paxg", "xaut"
+    "usde", "usdx", "crvusd", "gho", "mim", "usdn", "ousd", "alusd",
+    "dola", "usd+", "buidl",
+    # Wrapped tokens
+    "wbtc", "tbtc", "steth", "weth", "cbeth", "reth", "sfrxeth", "weeth",
+    "ezeth", "rseth", "wsteth", "heth",
+    # Tokens de oro
+    "paxg", "xaut",
+    # Tokens problemáticos detectados
+    "bill", "binancelife",
 }
 
+# Palabras prohibidas en el nombre
+BLACKLIST_WORDS = [
+    "usd", "tether", "wrapped", "staked", "bridged", "liquid staking",
+    "binancelife", "币安", "人生", "inu", "elon", "baby", "safe",
+    "moon", "doge2", "shib2", "pepe2"
+]
+
 def is_valid_coin(coin):
-    symbol = coin.get("symbol", "").lower()
-    name = coin.get("name", "").lower()
+    symbol = (coin.get("symbol") or "").lower().strip()
+    name = (coin.get("name") or "").lower().strip()
     mcap = coin.get("market_cap") or 0
     volume = coin.get("total_volume") or 0
 
-    # Filtrar stablecoins
-    if symbol in STABLECOINS:
+    # Filtrar por símbolo en blacklist
+    if symbol in BLACKLIST_SYMBOLS:
         return False
 
-    # Filtrar por nombre (wrapped tokens, stables)
-    skip_words = ["usd", "tether", "wrapped", "staked", "bridged", "liquid"]
-    for word in skip_words:
-        if word in name and symbol not in ["bud", "studio"]:
+    # Filtrar por palabras en nombre
+    for word in BLACKLIST_WORDS:
+        if word in name:
             return False
+
+    # Filtrar caracteres no latinos (chino, árabe, etc.)
+    try:
+        name.encode('ascii')
+    except UnicodeEncodeError:
+        return False
 
     # Filtrar volumen mínimo
     if volume < MIN_VOLUME:
@@ -47,9 +66,13 @@ def is_valid_coin(coin):
 def send_message(text):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     try:
-        requests.post(url, json={"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}, timeout=10)
-    except:
-        pass
+        requests.post(url, json={
+            "chat_id": CHAT_ID,
+            "text": text,
+            "parse_mode": "Markdown"
+        }, timeout=10)
+    except Exception as e:
+        print(f"Error enviando mensaje: {e}")
 
 def get_coins():
     all_coins = []
@@ -68,26 +91,14 @@ def get_coins():
             )
             if r.ok:
                 all_coins.extend(r.json())
-            time.sleep(1.5)
-        except:
-            pass
+            time.sleep(2)
+        except Exception as e:
+            print(f"Error obteniendo datos página {page}: {e}")
     return all_coins
 
-def get_funding_rates():
-    try:
-        r = requests.get("https://open-api.coinglass.com/public/v2/funding", timeout=10)
-        if r.ok:
-            rates = {}
-            for item in r.json().get("data", []):
-                symbol = item.get("symbol", "").upper()
-                rate = item.get("fundingRate", 0)
-                rates[symbol] = float(rate) if rate else 0
-            return rates
-    except:
-        pass
-    return {}
-
 def fmt_price(price):
+    if not price:
+        return "$0"
     if price > 100:
         return f"${price:,.2f}"
     elif price > 1:
@@ -103,12 +114,11 @@ def fmt_mcap(mcap):
     return f"${mcap/1_000_000:.0f}M"
 
 def analyze_market():
-    print(f"[{datetime.now().strftime('%H:%M')}] Analizando...")
+    print(f"[{datetime.now().strftime('%H:%M')}] Analizando mercado...")
     coins = get_coins()
-    funding_rates = get_funding_rates()
 
     if not coins:
-        print("Sin datos")
+        print("Sin datos de mercado")
         return
 
     spot_long = []
@@ -116,12 +126,13 @@ def analyze_market():
     futures_short = []
     market_alerts = []
 
-    # Alerta mercado general
+    # Alerta mercado general — BTC/ETH/SOL
     for coin in coins:
-        sym = coin.get("symbol", "").upper()
+        sym = (coin.get("symbol") or "").upper()
         h1 = coin.get("price_change_percentage_1h_in_currency") or 0
-        if sym in ["BTC", "ETH", "SOL"] and h1 > 3:
-            market_alerts.append((sym, h1, coin.get("current_price", 0)))
+        if sym in ["BTC", "ETH", "SOL"] and abs(h1) > 3:
+            direction = "🟢 subió" if h1 > 0 else "🔴 cayó"
+            market_alerts.append((sym, h1, coin.get("current_price", 0), direction))
 
     for coin in coins:
         if not is_valid_coin(coin):
@@ -132,12 +143,12 @@ def analyze_market():
         h1 = coin.get("price_change_percentage_1h_in_currency") or 0
         h24 = coin.get("price_change_percentage_24h") or 0
         h7d = coin.get("price_change_percentage_7d_in_currency") or 0
-        symbol = coin.get("symbol", "").upper()
         vol_ratio = volume / max(mcap, 1)
-        funding = funding_rates.get(symbol, 0)
 
-        # SPOT LONG — cap mín $100M, no stables
-        if mcap >= MIN_MARKET_CAP_SPOT and mcap < MIN_MARKET_CAP_GRID and h24 < 25:
+        # ========================
+        # SPOT LONG — $300M a $5B
+        # ========================
+        if MIN_MARKET_CAP_SPOT <= mcap < MIN_MARKET_CAP_GRID and h24 < 25:
             score = 0
             signals = []
 
@@ -164,7 +175,9 @@ def analyze_market():
             if score >= 40:
                 spot_long.append((score, coin, signals))
 
-        # PIONEX GRID — solo large caps reales +$5B
+        # ========================
+        # PIONEX GRID — +$5B
+        # ========================
         if mcap >= MIN_MARKET_CAP_GRID:
             lateral_score = 0
             grid_signals = []
@@ -189,33 +202,41 @@ def analyze_market():
             if lateral_score >= 50:
                 pionex_grid.append((lateral_score, coin, grid_signals))
 
-        # FUTUROS SHORT — cap mín $200M
+        # ========================
+        # FUTUROS SHORT — +$500M
+        # Sin Coinglass — lógica propia
+        # ========================
         if mcap >= MIN_MARKET_CAP_SHORT:
             short_score = 0
             short_signals = []
 
-            if h24 > 15:
-                short_score += 20
+            # Subida fuerte en 24h
+            if h24 > 20:
+                short_score += 25
+                short_signals.append(f"📈 Subió {h24:.1f}% en 24h")
+            elif h24 > 15:
+                short_score += 15
                 short_signals.append(f"📈 Subió {h24:.1f}% en 24h")
 
-            if funding > 0.001:
-                short_score += 35
-                short_signals.append(f"💰 Funding alto: {funding*100:.3f}%")
-            elif funding > 0.0005:
-                short_score += 15
-                short_signals.append(f"💰 Funding elevado: {funding*100:.3f}%")
+            # Precio se frenó después de subir
+            if h1 < 0 and h24 > 15:
+                short_score += 30
+                short_signals.append(f"⚠️ Frena en 1h: {h1:.2f}%")
 
-            if h1 < 1 and h24 > 10:
+            # Volumen bajando en máximos
+            if h24 > 15 and vol_ratio < 0.08:
                 short_score += 25
-                short_signals.append("⚠️ Precio estancado tras subida")
+                short_signals.append("📉 Volumen se agota en máximos")
 
-            if h24 > 20 and vol_ratio < 0.1:
+            # Subida sin volumen fuerte — pump débil
+            if h24 > 10 and vol_ratio < 0.05:
                 short_score += 20
-                short_signals.append("📉 Volumen bajando en máximos")
+                short_signals.append("💨 Subida sin volumen — pump débil")
 
-            if short_score >= 45:
+            if short_score >= 50:
                 futures_short.append((short_score, coin, short_signals))
 
+    # Ordenar y seleccionar mejores
     spot_long.sort(key=lambda x: x[0], reverse=True)
     pionex_grid.sort(key=lambda x: x[0], reverse=True)
     futures_short.sort(key=lambda x: x[0], reverse=True)
@@ -231,56 +252,62 @@ def analyze_market():
     hora = datetime.now().strftime('%H:%M')
     msg = f"🔍 *PUMP RADAR — {hora}*\n\n"
 
+    # Alerta mercado
     if market_alerts:
         msg += "🟡 *ALERTA DE MERCADO*\n"
-        for sym, h1, price in market_alerts:
-            msg += f"• *{sym}* +`{h1:.1f}%` en 1h — altcoins pueden seguir\n"
+        for sym, h1, price, direction in market_alerts:
+            msg += f"• *{sym}* {direction} `{h1:+.1f}%` en 1h → `{fmt_price(price)}`\n"
+        if any(h1 > 0 for _, h1, _, _ in market_alerts):
+            msg += "_Altcoins suelen seguir en 1-2hs_\n"
         msg += "\n"
 
+    # Spot long
     if top_spot:
         msg += "🟢 *SPOT LONG — BingX / Bitget / Nexo*\n"
-        msg += "_Señales tempranas | Cap $100M-$5B_\n\n"
+        msg += "_Señales tempranas | Cap $300M-$5B_\n\n"
         for score, coin, signals in top_spot:
-            sym = coin.get("symbol", "").upper()
-            name = coin.get("name", "")
-            price = coin.get("current_price", 0)
+            sym = (coin.get("symbol") or "").upper()
+            name = coin.get("name") or ""
+            price = coin.get("current_price") or 0
             h1 = coin.get("price_change_percentage_1h_in_currency") or 0
             h24 = coin.get("price_change_percentage_24h") or 0
             mcap = coin.get("market_cap") or 0
-            msg += f"▶️ *{sym}* ({name}) | Cap: `{fmt_mcap(mcap)}`\n"
-            msg += f"Score: *{score}/100* | Precio: `{fmt_price(price)}`\n"
+            msg += f"▶️ *{sym}* ({name}) | `{fmt_mcap(mcap)}`\n"
+            msg += f"Score: *{score}/100* | `{fmt_price(price)}`\n"
             msg += f"1h: `{h1:+.2f}%` | 24h: `{h24:+.2f}%`\n"
             msg += f"🎯 Objetivo: +15/25% | Stop: -8%\n"
             msg += f"_{', '.join(signals)}_\n\n"
 
+    # Pionex grid
     if top_grid:
-        msg += "🔵 *PIONEX BOT — Grid neutral*\n"
+        msg += "🔵 *PIONEX GRID — Bot neutral*\n"
         msg += "_Large caps laterales | Cap +$5B_\n\n"
         for score, coin, signals in top_grid:
-            sym = coin.get("symbol", "").upper()
-            name = coin.get("name", "")
-            price = coin.get("current_price", 0)
+            sym = (coin.get("symbol") or "").upper()
+            name = coin.get("name") or ""
+            price = coin.get("current_price") or 0
             h24 = coin.get("price_change_percentage_24h") or 0
             mcap = coin.get("market_cap") or 0
-            msg += f"↔️ *{sym}* ({name}) | Cap: `{fmt_mcap(mcap)}`\n"
-            msg += f"Score: `{score}/100` | Precio: `{fmt_price(price)}`\n"
+            msg += f"↔️ *{sym}* ({name}) | `{fmt_mcap(mcap)}`\n"
+            msg += f"Score: `{score}/100` | `{fmt_price(price)}`\n"
             msg += f"Rango 24h: `{h24:+.2f}%`\n"
             msg += f"🤖 Activar grid bot neutral en Pionex\n"
             msg += f"_{', '.join(signals)}_\n\n"
 
+    # Futuros short
     if top_short:
         msg += "🔴 *FUTUROS SHORT — BingX / Bitget*\n"
-        msg += "_Posible corrección | Cap +$200M_\n\n"
+        msg += "_Posible corrección | Cap +$500M_\n\n"
         for score, coin, signals in top_short:
-            sym = coin.get("symbol", "").upper()
-            name = coin.get("name", "")
-            price = coin.get("current_price", 0)
+            sym = (coin.get("symbol") or "").upper()
+            name = coin.get("name") or ""
+            price = coin.get("current_price") or 0
             h1 = coin.get("price_change_percentage_1h_in_currency") or 0
             h24 = coin.get("price_change_percentage_24h") or 0
             msg += f"🔻 *{sym}* ({name})\n"
-            msg += f"Score: *{score}/100* | Precio: `{fmt_price(price)}`\n"
+            msg += f"Score: *{score}/100* | `{fmt_price(price)}`\n"
             msg += f"1h: `{h1:+.2f}%` | 24h: `{h24:+.2f}%`\n"
-            msg += f"⚠️ Máx 3x | Stop: +5%\n"
+            msg += f"⚠️ Máx 3x | Stop: +5% | Objetivo: -10/20%\n"
             msg += f"_{', '.join(signals)}_\n\n"
 
     msg += "⚠️ _Experimental. No es asesoramiento financiero._"
@@ -292,23 +319,24 @@ def handle_updates():
     while True:
         try:
             url = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
-            r = requests.get(url, params={"offset": last_update + 1, "timeout": 10}, timeout=15)
+            r = requests.get(url, params={
+                "offset": last_update + 1,
+                "timeout": 10
+            }, timeout=15)
             if r.ok:
                 for update in r.json().get("result", []):
                     last_update = update["update_id"]
-                    text = update.get("message", {}).get("text", "")
+                    text = (update.get("message") or {}).get("text") or ""
+
                     if text == "/start":
                         send_message(
                             "👋 *Pump Radar — 4 módulos activos*\n\n"
-                            "🟢 *SPOT LONG* — señales tempranas\n"
-                            "_BingX / Bitget / Nexo | Cap $100M+_\n\n"
-                            "🔵 *PIONEX GRID* — mercado lateral\n"
-                            "_Large caps +$5B | Bot neutral_\n\n"
-                            "🔴 *FUTUROS SHORT* — corrección\n"
-                            "_BingX / Bitget | Máx 3x_\n\n"
-                            "🟡 *ALERTA MERCADO* — BTC/ETH/SOL\n\n"
+                            "🟢 *SPOT LONG* | Cap $300M+ | BingX/Bitget/Nexo\n"
+                            "🔵 *PIONEX GRID* | Cap $5B+ | Bot neutral\n"
+                            "🔴 *FUTUROS SHORT* | Cap $500M+ | BingX/Bitget\n"
+                            "🟡 *ALERTA MERCADO* | BTC/ETH/SOL\n\n"
                             "/analizar — análisis ahora\n"
-                            "/ayuda — cómo operar"
+                            "/ayuda — cómo operar cada señal"
                         )
                     elif text == "/analizar":
                         send_message("🔍 Analizando mercado...")
@@ -322,33 +350,32 @@ def handle_updates():
                             "• Venta en +15% a +25%\n"
                             "• Stop loss en -8%\n\n"
                             "🔵 *PIONEX GRID*\n"
-                            "• Abrís grid bot neutral\n"
-                            "• Configurás el rango detectado\n"
-                            "• Opera solo — ideal en lateral\n\n"
+                            "• Grid bot neutral en Pionex\n"
+                            "• Ideal cuando el activo está lateral\n"
+                            "• Cerrá si gana +5/10% o pierde -2/3%\n\n"
                             "🔴 *FUTUROS SHORT*\n"
                             "• Short en BingX o Bitget\n"
                             "• Máximo 2x-3x apalancamiento\n"
-                            "• Stop loss +5%\n"
-                            "• Objetivo -10% a -20%\n\n"
+                            "• Stop loss +5% | Objetivo -10/20%\n\n"
                             "🟡 *ALERTA MERCADO*\n"
-                            "• BTC/ETH/SOL sube +3% en 1h\n"
+                            "• BTC/ETH/SOL mueve +3% en 1h\n"
                             "• Altcoins suelen seguir en 1-2hs\n\n"
                             "⚠️ _Empezá con montos pequeños._"
                         )
         except Exception as e:
-            print(f"Error: {e}")
+            print(f"Error updates: {e}")
         time.sleep(2)
 
 def main():
-    print("🚀 Pump Radar iniciado — sin stables, sin shitcoins")
+    print("🚀 Pump Radar iniciado — versión corregida")
     send_message(
-        "✅ *Bot actualizado*\n\n"
-        "Filtros activos:\n"
-        "• Sin stablecoins\n"
-        "• Sin tokens dudosos\n"
-        "• Cap mín $100M spot\n"
-        "• Cap mín $5B grid\n"
-        "• Cap mín $200M short\n\n"
+        "✅ *Bot corregido y actualizado*\n\n"
+        "Mejoras:\n"
+        "• Blacklist robusta — sin shitcoins ni caracteres raros\n"
+        "• Cap mínimo spot: $300M\n"
+        "• Cap mínimo short: $500M\n"
+        "• Short sin depender de Coinglass\n"
+        "• Volumen mínimo: $5M\n\n"
         "Escribí /analizar para empezar."
     )
     schedule.every(1).hours.do(analyze_market)
