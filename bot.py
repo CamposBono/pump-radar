@@ -8,6 +8,11 @@ from datetime import datetime
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
+# FILTROS DE CALIDAD
+MIN_MARKET_CAP = 50_000_000      # Mínimo $50M de capitalización
+MIN_VOLUME = 1_000_000           # Mínimo $1M de volumen diario
+MAX_24H_CHANGE = 25              # Si ya subió más de 25% en 24h, descartamos
+
 def send_message(text):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     requests.post(url, json={"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"})
@@ -19,7 +24,7 @@ def get_coins():
             params={
                 "vs_currency": "usd",
                 "order": "volume_desc",
-                "per_page": 100,
+                "per_page": 150,
                 "page": 1,
                 "price_change_percentage": "1h,24h,7d"
             },
@@ -32,20 +37,28 @@ def get_coins():
 def calc_early_signal(coin):
     score = 0
     signals = []
-    early = False
 
-    mcap = coin.get("market_cap") or 1
+    mcap = coin.get("market_cap") or 0
     volume = coin.get("total_volume") or 0
     h1 = coin.get("price_change_percentage_1h_in_currency") or 0
     h24 = coin.get("price_change_percentage_24h") or 0
     h7d = coin.get("price_change_percentage_7d_in_currency") or 0
 
+    # FILTROS DE CALIDAD — descartar monedas dudosas
+    if mcap < MIN_MARKET_CAP:
+        return 0, [], False
+    if volume < MIN_VOLUME:
+        return 0, [], False
+    if h24 > MAX_24H_CHANGE:
+        return 0, [], False
+
     vol_ratio = volume / mcap
 
-    # SEÑAL TEMPRANA: volumen sube pero precio quieto
+    # SEÑAL TEMPRANA: volumen sube pero precio quieto (acumulación)
+    early = False
     if vol_ratio > 0.3 and abs(h1) < 3:
         score += 40
-        signals.append("🎯 Volumen alto con precio quieto")
+        signals.append("🎯 Volumen alto, precio quieto")
         early = True
 
     if vol_ratio > 0.5 and abs(h1) < 5:
@@ -53,14 +66,14 @@ def calc_early_signal(coin):
         signals.append("⚡ Volumen extremo sin movimiento")
         early = True
 
-    # Moneda dormida que despertó
-    if abs(h7d) < 10 and vol_ratio > 0.2:
-        score += 15
-        signals.append("😴 Dormida 7d pero activa hoy")
+    # Moneda dormida que despertó esta semana
+    if abs(h7d) < 8 and vol_ratio > 0.2 and h24 > 3:
+        score += 20
+        signals.append("😴 Dormida 7d, activa hoy")
         early = True
 
-    # Inicio de movimiento moderado
-    if h1 > 2 and h1 < 8 and vol_ratio > 0.15:
+    # Inicio de movimiento moderado (no demasiado tarde)
+    if h1 > 2 and h1 < 7 and vol_ratio > 0.15:
         score += 20
         signals.append(f"🌱 Inicio +{h1:.1f}% en 1h")
 
@@ -68,25 +81,13 @@ def calc_early_signal(coin):
         score += 15
         signals.append(f"📈 +{h24:.1f}% en 24h")
 
-    # Penalizar si ya subió demasiado
-    if h24 > 30:
-        score -= 25
-        signals.append(f"⚠️ Ya subió {h24:.1f}% puede ser tarde")
-
-    if h1 > 15:
-        score -= 20
-        signals.append(f"⚠️ Ya subió {h1:.1f}% en 1h")
-
-    # Tamaño del activo
-    if mcap < 10_000_000:
-        score += 10
-        signals.append("💎 Micro cap")
-    elif mcap < 100_000_000:
+    # Bonus por tamaño (más seguro)
+    if mcap > 500_000_000:
         score += 8
-        signals.append("🔹 Small cap")
-    elif mcap > 1_000_000_000:
+        signals.append("🏦 Mid/Large cap")
+    elif mcap > 100_000_000:
         score += 5
-        signals.append("🏦 Large cap")
+        signals.append("🔹 Small cap sólido")
 
     score = max(0, min(100, score))
     return score, signals, early
@@ -95,6 +96,7 @@ def analyze_market():
     print(f"[{datetime.now().strftime('%H:%M')}] Analizando...")
     coins = get_coins()
     if not coins:
+        print("Sin datos")
         return
 
     results = []
@@ -103,6 +105,7 @@ def analyze_market():
         if score >= 45:
             results.append((score, coin, signals, early))
 
+    # Ordenar: primero señales tempranas, luego por score
     results.sort(key=lambda x: (x[3], x[0]), reverse=True)
     top = results[:3]
 
@@ -111,7 +114,7 @@ def analyze_market():
         return
 
     hora = datetime.now().strftime('%H:%M')
-    msg = f"🔍 *PUMP RADAR — {hora}*\n_Top {len(top)} señales tempranas_\n\n"
+    msg = f"🔍 *PUMP RADAR — {hora}*\n_Top {len(top)} señales — cap mín $50M_\n\n"
 
     for score, coin, signals, early in top:
         symbol = coin.get("symbol", "").upper()
@@ -119,12 +122,23 @@ def analyze_market():
         price = coin.get("current_price", 0)
         h1 = coin.get("price_change_percentage_1h_in_currency") or 0
         h24 = coin.get("price_change_percentage_24h") or 0
+        mcap = coin.get("market_cap") or 0
 
         emoji = "🎯" if early else ("🔴" if score >= 60 else "🟠")
         tipo = "SEÑAL TEMPRANA" if early else ("SEÑAL FUERTE" if score >= 60 else "SEÑAL MODERADA")
 
+        if price > 1:
+            price_str = f"${price:,.4f}"
+        elif price > 0.01:
+            price_str = f"${price:,.6f}"
+        else:
+            price_str = f"${price:,.8f}"
+
+        mcap_str = f"${mcap/1_000_000:.0f}M" if mcap < 1_000_000_000 else f"${mcap/1_000_000_000:.1f}B"
+
         msg += f"{emoji} *{symbol}* ({name}) — {tipo}\n"
-        msg += f"Score: *{score}/100* | Precio: `${price:,.6f}`\n"
+        msg += f"Score: *{score}/100* | Cap: `{mcap_str}`\n"
+        msg += f"Precio: `{price_str}`\n"
         msg += f"1h: `{h1:+.2f}%` | 24h: `{h24:+.2f}%`\n"
         msg += f"_{', '.join(signals)}_\n\n"
 
@@ -143,19 +157,48 @@ def handle_updates():
                     last_update = update["update_id"]
                     text = update.get("message", {}).get("text", "")
                     if text == "/start":
-                        send_message("👋 *Pump Radar activo*\nDetecto señales tempranas antes de que suban.\n\n/analizar — análisis ahora\n/ayuda — cómo interpretar")
+                        send_message(
+                            "👋 *Pump Radar activo*\n\n"
+                            "Detecto señales tempranas en monedas con cap mínimo $50M.\n"
+                            "Sin shitcoins, sin monedas dudosas.\n\n"
+                            "/analizar — análisis ahora\n"
+                            "/ayuda — cómo interpretar las señales"
+                        )
                     elif text == "/analizar":
-                        send_message("🔍 Analizando...")
+                        send_message("🔍 Analizando mercado...")
                         analyze_market()
                     elif text == "/ayuda":
-                        send_message("🎯 *SEÑAL TEMPRANA* — volumen sube pero precio quieto. Mejor momento.\n\n🔴 *SEÑAL FUERTE* — movimiento iniciado.\n\n🟠 *SEÑAL MODERADA* — actividad interesante.\n\n⚠️ Si ya subió +30% puede ser tarde.\n\n_Verificá siempre en CoinMarketCap antes de invertir._")
+                        send_message(
+                            "*Cómo interpretar:*\n\n"
+                            "🎯 *SEÑAL TEMPRANA*\n"
+                            "Volumen subiendo pero precio quieto.\n"
+                            "Alguien está comprando antes del movimiento.\n"
+                            "→ Mejor momento para entrar\n\n"
+                            "🔴 *SEÑAL FUERTE*\n"
+                            "Movimiento iniciado con fuerza.\n"
+                            "→ Todavía puede tener recorrido\n\n"
+                            "🟠 *SEÑAL MODERADA*\n"
+                            "Actividad interesante, seguir de cerca.\n\n"
+                            "*Filtros activos:*\n"
+                            "✅ Cap mínimo $50M\n"
+                            "✅ Volumen mínimo $1M\n"
+                            "✅ Descarta monedas que ya subieron +25%\n\n"
+                            "_Verificá siempre en CoinMarketCap antes de invertir._"
+                        )
         except Exception as e:
             print(f"Error: {e}")
         time.sleep(2)
 
 def main():
-    print("🚀 Pump Radar iniciado")
-    send_message("✅ *Bot actualizado*\nAhora detecto señales tempranas — volumen subiendo antes que el precio.\nMáximo 3 alertas por hora.\n\nEscribí /analizar para empezar.")
+    print("🚀 Pump Radar iniciado — filtro $50M activado")
+    send_message(
+        "✅ *Bot actualizado — Filtro de calidad activo*\n\n"
+        "Ahora solo analizo monedas con:\n"
+        "• Cap mínimo $50M\n"
+        "• Volumen mínimo $1M\n"
+        "• Sin monedas que ya subieron +25%\n\n"
+        "Escribí /analizar para ver las primeras señales."
+    )
     schedule.every(1).hours.do(analyze_market)
     analyze_market()
     t = threading.Thread(target=handle_updates, daemon=True)
