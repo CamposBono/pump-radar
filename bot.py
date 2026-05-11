@@ -89,7 +89,7 @@ def analizar(par_kraken,simbolo):
     if vol_ratio>1.5 and velas_alcistas and vol_ratio>0.5:ls+=20;lsg.append(f"💪 Vol {vol_ratio:.1f}x en 2 velas")
     if c30>1 and c15>0.3:ls+=15;lsg.append(f"🌱 +{c30:.1f}% sostenido en 30m")
 
-    if ls>=65:
+    if ls>=55:
         return{"sym":simbolo,"precio":fp(precio),"score":ls,"sig":lsg,
                "c15":c15,"c1h":c1h,"vr":vol_ratio,"tipo":"long"}
 
@@ -101,7 +101,7 @@ def analizar(par_kraken,simbolo):
     if vol_ratio>1.5 and velas_bajistas and vol_ratio>0.5:ss+=20;ssg.append(f"💪 Vol {vol_ratio:.1f}x en 2 velas")
     if c30<-1 and c15<-0.3:ss+=15;ssg.append(f"🔻 {c30:.1f}% sostenido en 30m")
 
-    if ss>=65:
+    if ss>=55:
         return{"sym":simbolo,"precio":fp(precio),"score":ss,"sig":ssg,
                "c15":c15,"c1h":c1h,"vr":vol_ratio,"tipo":"short"}
     return None
