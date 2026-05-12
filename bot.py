@@ -13,10 +13,10 @@ PARES=[
     ("NEAR/USDT","NEAR"),("LTC/USDT","LTC"),("UNI/USDT","UNI"),
     ("AAVE/USDT","AAVE"),("APT/USDT","APT"),("SUI/USDT","SUI"),
     ("ARB/USDT","ARB"),("OP/USDT","OP"),("INJ/USDT","INJ"),
-    ("FTM/USDT","FTM"),("ALGO/USDT","ALGO"),("ICP/USDT","ICP"),
-    ("FIL/USDT","FIL"),("XLM/USDT","XLM"),("BCH/USDT","BCH"),
+    ("XLM/USDT","XLM"),("BCH/USDT","BCH"),
 ]
 
+FEES=0.001  # 0.1% ida y vuelta aprox
 senales_hoy={"long":0,"short":0,"fecha":""}
 
 def send(t):
@@ -25,7 +25,7 @@ def send(t):
             json={"chat_id":CHAT_ID,"text":t,"parse_mode":"Markdown"},timeout=10)
     except:pass
 
-def get_ohlc(par,intervalo=15):
+def get_ohlc(par,intervalo=60):
     try:
         r=requests.get("https://api.kraken.com/0/public/OHLC",
             params={"pair":par,"interval":intervalo},timeout=10)
@@ -37,24 +37,8 @@ def get_ohlc(par,intervalo=15):
     except:pass
     return[]
 
-def detectar_bos(highs,lows):
-    if len(highs)<10:return False,False
-    max_previo=max(highs[-10:-2])
-    min_previo=min(lows[-10:-2])
-    return highs[-1]>max_previo,lows[-1]<min_previo
-
-def detectar_choch(closes):
-    if len(closes)<8:return False,False
-    choch_l=closes[-1]>closes[-3] and closes[-3]>closes[-5] and closes[-5]<closes[-7]
-    choch_s=closes[-1]<closes[-3] and closes[-3]<closes[-5] and closes[-5]>closes[-7]
-    return choch_l,choch_s
-
-def detectar_fvg(highs,lows):
-    if len(highs)<3:return False,False
-    return lows[-1]>highs[-3],highs[-1]<lows[-3]
-
-def analizar(par_kraken,simbolo):
-    velas=get_ohlc(par_kraken)
+def calcular_señal(par_kraken,simbolo):
+    velas=get_ohlc(par_kraken,60)
     if len(velas)<20:return None
 
     opens=[float(v[1])for v in velas[-20:]]
@@ -64,46 +48,90 @@ def analizar(par_kraken,simbolo):
     volumes=[float(v[6])for v in velas[-20:]]
 
     precio=closes[-1]
-    vol_actual=sum(volumes[-2:])
-    vol_prom=sum(volumes[-12:-2])/10
+    vol_actual=volumes[-1]
+    vol_prom=sum(volumes[-10:-1])/9
     vol_ratio=vol_actual/max(vol_prom,0.0001)
 
-    c15=(closes[-1]-closes[-2])/max(closes[-2],0.0001)*100
-    c30=(closes[-1]-closes[-3])/max(closes[-3],0.0001)*100
-    c1h=(closes[-1]-closes[-5])/max(closes[-5],0.0001)*100
+    c1h=(closes[-1]-closes[-2])/max(closes[-2],0.0001)*100
+    c4h=(closes[-1]-closes[-5])/max(closes[-5],0.0001)*100
+    c24h=(closes[-1]-closes[-25])/max(closes[-25],0.0001)*100 if len(closes)>=25 else c4h*3
 
-    velas_alcistas=closes[-1]>opens[-1] and closes[-2]>opens[-2]
-    velas_bajistas=closes[-1]<opens[-1] and closes[-2]<opens[-2]
+    velas_alc=closes[-1]>opens[-1] and closes[-2]>opens[-2]
+    velas_baj=closes[-1]<opens[-1] and closes[-2]<opens[-2]
 
-    bos_l,bos_s=detectar_bos(highs,lows)
-    choch_l,choch_s=detectar_choch(closes)
-    fvg_l,fvg_s=detectar_fvg(highs,lows)
+    # BOS
+    max_prev=max(highs[-10:-2])
+    min_prev=min(lows[-10:-2])
+    bos_l=highs[-1]>max_prev
+    bos_s=lows[-1]<min_prev
+
+    # CHoCH
+    choch_l=closes[-1]>closes[-3] and closes[-3]>closes[-5] and closes[-5]<closes[-7]
+    choch_s=closes[-1]<closes[-3] and closes[-3]<closes[-5] and closes[-5]>closes[-7]
+
+    # FVG
+    fvg_l=len(lows)>=3 and lows[-1]>highs[-3]
+    fvg_s=len(highs)>=3 and highs[-1]<lows[-3]
 
     fp=lambda p:(f"${p:,.2f}" if p>100 else f"${p:,.4f}" if p>1 else f"${p:,.6f}")
 
-    # LONG — score mínimo 65
+    def calcular_trade(entrada,tipo,score):
+        if tipo=="long":
+            sl_pct=0.05 if score>=75 else 0.07
+            tp1_pct=0.10
+            tp2_pct=0.18
+            sl=entrada*(1-sl_pct)
+            tp1=entrada*(1+tp1_pct)
+            tp2=entrada*(1+tp2_pct)
+            ganancia_neta=tp1_pct-FEES
+            apal=5 if score>=80 else 3
+        else:
+            sl_pct=0.04 if score>=75 else 0.06
+            tp1_pct=0.08
+            tp2_pct=0.15
+            sl=entrada*(1+sl_pct)
+            tp1=entrada*(1-tp1_pct)
+            tp2=entrada*(1-tp2_pct)
+            ganancia_neta=tp1_pct-FEES
+            apal=3 if score>=75 else 2
+
+        rentable=ganancia_neta>sl_pct*0.5
+        return{
+            "sl":fp(sl),"tp1":fp(tp1),"tp2":fp(tp2),
+            "sl_pct":sl_pct*100,"tp1_pct":tp1_pct*100,
+            "ganancia_neta":ganancia_neta*100,
+            "apal":apal,"rentable":rentable
+        }
+
+    # LONG
     ls=0;lsg=[]
-    if bos_l and velas_alcistas:ls+=40;lsg.append("📈 BOS alcista confirmado")
-    if choch_l:ls+=30;lsg.append("🔄 CHoCH — cambio a alcista")
-    if fvg_l:ls+=20;lsg.append("⬜ FVG alcista detectado")
-    if vol_ratio>1.5 and velas_alcistas and vol_ratio>0.5:ls+=20;lsg.append(f"💪 Vol {vol_ratio:.1f}x en 2 velas")
-    if c30>1 and c15>0.3:ls+=15;lsg.append(f"🌱 +{c30:.1f}% sostenido en 30m")
+    confirmaciones=0
+    if bos_l and velas_alc:ls+=40;lsg.append("📈 BOS alcista");confirmaciones+=1
+    if choch_l:ls+=30;lsg.append("🔄 CHoCH alcista");confirmaciones+=1
+    if fvg_l:ls+=20;lsg.append("⬜ FVG alcista");confirmaciones+=1
+    if vol_ratio>0.8 and velas_alc:ls+=15;lsg.append(f"💪 Vol {vol_ratio:.1f}x")
+    if c4h>1 and c1h>0.2:ls+=10;lsg.append(f"🌱 +{c4h:.1f}% en 4h")
 
-    if ls>=65:
-        return{"sym":simbolo,"precio":fp(precio),"score":ls,"sig":lsg,
-               "c15":c15,"c1h":c1h,"vr":vol_ratio,"tipo":"long"}
+    if ls>=55 and confirmaciones>=2 and vol_ratio>=0.8:
+        t=calcular_trade(precio,"long",ls)
+        if t["rentable"]:
+            return{"sym":simbolo,"precio":fp(precio),"score":ls,"sig":lsg,
+                   "c1h":c1h,"c4h":c4h,"vr":vol_ratio,"tipo":"long","trade":t}
 
-    # SHORT — score mínimo 65
+    # SHORT
     ss=0;ssg=[]
-    if bos_s and velas_bajistas:ss+=40;ssg.append("📉 BOS bajista confirmado")
-    if choch_s:ss+=30;ssg.append("🔄 CHoCH — cambio a bajista")
-    if fvg_s:ss+=20;ssg.append("⬜ FVG bajista detectado")
-    if vol_ratio>1.5 and velas_bajistas and vol_ratio>0.5:ss+=20;ssg.append(f"💪 Vol {vol_ratio:.1f}x en 2 velas")
-    if c30<-1 and c15<-0.3:ss+=15;ssg.append(f"🔻 {c30:.1f}% sostenido en 30m")
+    conf_s=0
+    if bos_s and velas_baj:ss+=40;ssg.append("📉 BOS bajista");conf_s+=1
+    if choch_s:ss+=30;ssg.append("🔄 CHoCH bajista");conf_s+=1
+    if fvg_s:ss+=20;ssg.append("⬜ FVG bajista");conf_s+=1
+    if vol_ratio>0.8 and velas_baj:ss+=15;ssg.append(f"💪 Vol {vol_ratio:.1f}x")
+    if c4h<-1 and c1h<-0.2:ss+=10;ssg.append(f"🔻 {c4h:.1f}% en 4h")
 
-    if ss>=65:
-        return{"sym":simbolo,"precio":fp(precio),"score":ss,"sig":ssg,
-               "c15":c15,"c1h":c1h,"vr":vol_ratio,"tipo":"short"}
+    if ss>=55 and conf_s>=2 and vol_ratio>=0.8:
+        t=calcular_trade(precio,"short",ss)
+        if t["rentable"]:
+            return{"sym":simbolo,"precio":fp(precio),"score":ss,"sig":ssg,
+                   "c1h":c1h,"c4h":c4h,"vr":vol_ratio,"tipo":"short","trade":t}
     return None
 
 def run():
@@ -114,50 +142,55 @@ def run():
     if senales_hoy["fecha"]!=fecha_hoy:
         senales_hoy={"long":0,"short":0,"fecha":fecha_hoy}
 
-    if senales_hoy["long"]>=4 and senales_hoy["short"]>=2:
+    if senales_hoy["long"]>=3 and senales_hoy["short"]>=2:
         print("Limite diario alcanzado");return
 
-    print(f"[{now.strftime('%H:%M')}] Analizando {len(PARES)} pares SMC...")
+    print(f"[{now.strftime('%H:%M')}] Analizando {len(PARES)} pares H1 SMC...")
     longs,shorts=[],[]
 
     for par,sym in PARES:
-        r=analizar(par,sym)
+        r=calcular_señal(par,sym)
         if r:
-            if r["tipo"]=="long" and senales_hoy["long"]<4:longs.append(r)
+            if r["tipo"]=="long" and senales_hoy["long"]<3:longs.append(r)
             elif r["tipo"]=="short" and senales_hoy["short"]<2:shorts.append(r)
-        time.sleep(0.5)
+        time.sleep(1)
 
     longs.sort(key=lambda x:x["score"],reverse=True)
     shorts.sort(key=lambda x:x["score"],reverse=True)
     tl=longs[:2];ts=shorts[:1]
 
     if not tl and not ts:
-        print("Sin senales SMC");return
+        print("Sin senales");return
 
     hora=now.strftime("%H:%M")
-    msg=f"📡 *PUMP RADAR SMC — {hora} ARG*\n_BOS · CHoCH · FVG | Kraken 15m_\n\n"
+    msg=f"📡 *PUMP RADAR — {hora} ARG*\n_SMC H1 | BOS · CHoCH · FVG_\n\n"
 
-    if tl:
-        msg+="🟢 *LONG — Spot o Futuros*\n\n"
-        for r in tl:
-            msg+=f"▶️ *{r['sym']}* | Score: `{r['score']}/100`\n"
-            msg+=f"Precio: `{r['precio']}`\n"
-            msg+=f"15m: `{r['c15']:+.2f}%` | 1h: `{r['c1h']:+.2f}%`\n"
-            msg+=f"Vol: `{r['vr']:.1f}x` el promedio\n"
-            msg+=f"🎯 Obj: +10/20% | Stop: -5%\n"
-            msg+=f"_{', '.join(r['sig'])}_\n\n"
-        senales_hoy["long"]+=len(tl)
+    for r in tl:
+        t=r["trade"]
+        msg+=f"🟢 *LONG — {r['sym']}*\n"
+        msg+=f"Score: `{r['score']}/100` | Vol: `{r['vr']:.1f}x`\n"
+        msg+=f"📍 Entrada: `{r['precio']}`\n"
+        msg+=f"🎯 TP1: `{t['tp1']}` (+{t['tp1_pct']:.0f}%)\n"
+        msg+=f"🎯 TP2: `{t['tp2']}` (+{t['tp2_pct']:.0f}%)\n" if 'tp2_pct' in t else ""
+        msg+=f"🛑 SL: `{t['sl']}` (-{t['sl_pct']:.0f}%)\n"
+        msg+=f"⚡ Apalancamiento: `{t['apal']}x`\n"
+        msg+=f"💰 Ganancia neta est: `+{t['ganancia_neta']:.1f}%`\n"
+        msg+=f"1h: `{r['c1h']:+.2f}%` | 4h: `{r['c4h']:+.2f}%`\n"
+        msg+=f"_{', '.join(r['sig'])}_\n\n"
+        senales_hoy["long"]+=1
 
-    if ts:
-        msg+="🔴 *SHORT — Futuros*\n\n"
-        for r in ts:
-            msg+=f"🔻 *{r['sym']}* | Score: `{r['score']}/100`\n"
-            msg+=f"Precio: `{r['precio']}`\n"
-            msg+=f"15m: `{r['c15']:+.2f}%` | 1h: `{r['c1h']:+.2f}%`\n"
-            msg+=f"Vol: `{r['vr']:.1f}x` el promedio\n"
-            msg+=f"⚠️ Máx 3x | Stop: +3%\n"
-            msg+=f"_{', '.join(r['sig'])}_\n\n"
-        senales_hoy["short"]+=len(ts)
+    for r in ts:
+        t=r["trade"]
+        msg+=f"🔴 *SHORT — {r['sym']}*\n"
+        msg+=f"Score: `{r['score']}/100` | Vol: `{r['vr']:.1f}x`\n"
+        msg+=f"📍 Entrada: `{r['precio']}`\n"
+        msg+=f"🎯 TP1: `{t['tp1']}` (-{t['tp1_pct']:.0f}%)\n"
+        msg+=f"🛑 SL: `{t['sl']}` (+{t['sl_pct']:.0f}%)\n"
+        msg+=f"⚡ Apalancamiento: `{t['apal']}x`\n"
+        msg+=f"💰 Ganancia neta est: `+{t['ganancia_neta']:.1f}%`\n"
+        msg+=f"1h: `{r['c1h']:+.2f}%` | 4h: `{r['c4h']:+.2f}%`\n"
+        msg+=f"_{', '.join(r['sig'])}_\n\n"
+        senales_hoy["short"]+=1
 
     msg+=f"📊 Señales hoy: {senales_hoy['long']} long | {senales_hoy['short']} short\n"
     msg+="⚠️ _Experimental. No es asesoramiento financiero._"
@@ -175,13 +208,13 @@ def listen():
                     last=u["update_id"]
                     t=(u.get("message")or{}).get("text")or""
                     if t=="/start":
-                        send("👋 *Pump Radar SMC activo*\n\nDetecto BOS, CHoCH y FVG en 15m\nScore minimo: 65/100\nHorarios: 9am, 3pm y 8pm ARG\n\n/analizar — analisis ahora\n/resumen — senales de hoy\n/ayuda — como operar")
+                        send("👋 *Pump Radar Futuros H1*\n\nSMC en H1 — BOS, CHoCH, FVG\nTop 20 pares | Long y Short\nHorarios: 9am, 3pm, 8pm ARG\n\n/analizar — análisis ahora\n/resumen — señales de hoy\n/ayuda — cómo operar")
                     elif t=="/analizar":
-                        send("🔍 Analizando estructura SMC...");run()
+                        send("🔍 Analizando 20 pares en H1...");run()
                     elif t=="/resumen":
-                        send(f"📊 *Senales de hoy:*\n🟢 Long: {senales_hoy['long']}/4\n🔴 Short: {senales_hoy['short']}/2\nFecha: {senales_hoy['fecha']}")
+                        send(f"📊 *Señales de hoy:*\n🟢 Long: {senales_hoy['long']}/3\n🔴 Short: {senales_hoy['short']}/2\nFecha: {senales_hoy['fecha']}")
                     elif t=="/ayuda":
-                        send("*Conceptos SMC:*\n\n📈 *BOS* — rompe estructura previa\n🔄 *CHoCH* — cambia direccion\n⬜ *FVG* — gap que el precio llenara\n\n🟢 *LONG*\nObj: +10% a +20% | Stop: -5%\n\n🔴 *SHORT*\nMax 3x | Stop: +3% | Obj: -10/15%\n\n_Verifica siempre antes de entrar._")
+                        send("*Cómo operar:*\n\n📍 *Entrada* — precio actual al recibir señal\n🎯 *TP1/TP2* — objetivos de ganancia\n🛑 *SL* — stop loss, salís si llega ahí\n⚡ *Apalancamiento* — sugerido según score\n\n*Regla de oro:*\nSi el precio se mueve -50% del SL sin llegar, revisá la señal.\n\n_Verificá siempre en tu exchange antes de entrar._")
         except Exception as e:
             print(f"Err:{e}")
         time.sleep(2)
@@ -190,7 +223,7 @@ schedule.every().day.at("12:00").do(run)
 schedule.every().day.at("18:00").do(run)
 schedule.every().day.at("23:00").do(run)
 
-send("✅ *Pump Radar SMC activo*\nScore minimo 65 | BOS CHoCH FVG\nHorarios: 9am, 3pm y 8pm ARG")
+send("✅ *Pump Radar Futuros H1 activo*\nSMC | TP · SL · Apalancamiento incluidos\nHorarios: 9am, 3pm y 8pm ARG")
 run()
 threading.Thread(target=listen,daemon=True).start()
 while True:schedule.run_pending();time.sleep(30)
