@@ -61,7 +61,7 @@ def calcular_tp_dinamico(closes,tipo):
     vol_prom=sum(rangos)/len(rangos) if rangos else 1.5
     # TP = 2x la volatilidad promedio, minimo 5%, maximo 15%
     tp_pct=max(5,min(15,vol_prom*2))
-    sl_pct=max(3,min(6,vol_pct:=vol_prom*0.8))
+    sl_pct=max(3,min(6,vol_prom_precio*0.8))
     return tp_pct,sl_pct
 
 def ya_alertado(simbolo,tipo):
