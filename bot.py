@@ -25,49 +25,89 @@ def ohlc(par):
     except:pass
     return[]
 
+def btc_dir():
+    v=ohlc("XBT/USDT")
+    if len(v)<3:return"neu"
+    c=[float(x[4])for x in v[-3:]]
+    return"baj"if c[-1]<c[-2]<c[-3]else"alc"if c[-1]>c[-2]>c[-3]else"neu"
+
 def analizar(par,sym):
+    if sym=="BTC":return None
     v=ohlc(par)
-    if len(v)<20:return None
-    o=[float(x[1])for x in v[-20:]]
-    h=[float(x[2])for x in v[-20:]]
-    l=[float(x[3])for x in v[-20:]]
-    c=[float(x[4])for x in v[-20:]]
-    vol=[float(x[6])for x in v[-20:]]
+    if len(v)<15:return None
+    o=[float(x[1])for x in v[-15:]]
+    h=[float(x[2])for x in v[-15:]]
+    l=[float(x[3])for x in v[-15:]]
+    c=[float(x[4])for x in v[-15:]]
+    vol=[float(x[6])for x in v[-15:]]
+
     p=c[-1]
-    vr=vol[-1]/max(sum(vol[-11:-1])/10,0.0001)
+    vol_actual=vol[-1]
+    vol_prom=sum(vol[-11:-1])/10
+    vr=vol_actual/max(vol_prom,0.0001)
+
+    # Vela actual en formacion
+    vela_roja=c[-1]<o[-1]
+    vela_verde=c[-1]>o[-1]
+    cuerpo=abs(c[-1]-o[-1])/max(o[-1],0.0001)*100
+
+    # Maximos y minimos recientes (excluye vela actual)
+    max_rec=max(h[-10:-1])
+    min_rec=min(l[-10:-1])
+
+    # Distancia al breakout
+    dist_short=(p-min_rec)/max(min_rec,0.0001)*100
+    dist_long=(max_rec-p)/max(p,0.0001)*100
+
+    # Volumen creciendo (no explosivo)
+    vol_creciendo=vol[-1]>vol[-2]*1.2 and vr>1.2
+
+    # Momentum en formacion
     c1=(c[-1]-c[-2])/max(c[-2],0.0001)*100
     c4=(c[-1]-c[-5])/max(c[-5],0.0001)*100
-    alc=c[-1]>o[-1] and c[-2]>o[-2]
-    baj=c[-1]<o[-1] and c[-2]<o[-2]
-    bos_l=h[-1]>max(h[-10:-2]) and alc
-    bos_s=l[-1]<min(l[-10:-2]) and baj
-    choch_l=c[-1]>c[-3]>c[-5] and c[-5]<c[-7]
-    choch_s=c[-1]<c[-3]<c[-5] and c[-5]>c[-7]
-    fvg_l=l[-1]>h[-3]
-    fvg_s=h[-1]<l[-3]
-    rng=[abs(c[i]-c[i-1])/c[i-1]*100 for i in range(1,10)]
-    vp=sum(rng)/len(rng) if rng else 1.5
-    tp=max(5,min(12,vp*2.5))
-    sl=max(3,min(5,vp*0.9))
+
     fp=lambda x:(f"${x:,.2f}"if x>100 else f"${x:,.4f}"if x>1 else f"${x:,.6f}")
-    tend="alc"if c[-1]>c[-10]else"baj"if c[-1]<c[-10]else"neu"
-    for tipo,cond,cl in[("long",alc and vr>=0.8,[bos_l,choch_l,fvg_l]),("short",baj and vr>=0.8,[bos_s,choch_s,fvg_s])]:
-        confs=sum(cl)
-        if confs<2:continue
-        sc=min(confs*30+int(vr*10),100)
-        if sc<55:continue
+
+    rng=[abs(c[i]-c[i-1])/c[i-1]*100 for i in range(1,10)]
+    vp=sum(rng)/len(rng)if rng else 1.5
+    tp=max(4,min(10,vp*2))
+    sl=max(2,min(4,vp*0.7))
+
+    btc=btc_dir()
+
+    for tipo in["short","long"]:
         k=f"{sym}_{tipo}"
-        if k in hist and datetime.now(ARG)-hist[k]<timedelta(hours=2):continue
-        if tipo=="long" and tend=="baj":continue
-        if tipo=="short" and tend=="alc":continue
-        sigs=[]
-        if cl[0]:sigs.append("📈 BOS"if tipo=="long"else"📉 BOS")
-        if cl[1]:sigs.append("🔄 CHoCH")
-        if cl[2]:sigs.append("⬜ FVG")
-        sigs.append(f"💪 Vol {vr:.1f}x")
-        tp1=p*(1+tp/100)if tipo=="long"else p*(1-tp/100)
-        sl1=p*(1-sl/100)if tipo=="long"else p*(1+sl/100)
-        apal=5 if sc>=80 else 3
+        if k in hist and datetime.now(ARG)-hist[k]<timedelta(hours=3):continue
+
+        if tipo=="short":
+            # Pre-breakout bajista: cerca del minimo, volumen creciendo, vela roja
+            if not(0<=dist_short<=0.8 and vela_roja and vol_creciendo and cuerpo>0.1):continue
+            if btc=="alc":continue  # BTC subiendo = no shortear
+            sc=60
+            if dist_short<0.3:sc+=20
+            if vr>2:sc+=10
+            if btc=="baj":sc+=15
+            if c4<-1:sc+=10
+            sc=min(sc,100)
+            sigs=[f"⚡ Pre-breakout bajista ({dist_short:.2f}% del min)",f"📊 Vol {vr:.1f}x creciendo",f"🕯️ Vela roja formándose"]
+            if btc=="baj":sigs.append("₿ BTC confirma bajista")
+            tp1=p*(1-tp/100);sl1=p*(1+sl/100)
+
+        else:
+            # Pre-breakout alcista: cerca del maximo, volumen creciendo, vela verde
+            if not(0<=dist_long<=0.8 and vela_verde and vol_creciendo and cuerpo>0.1):continue
+            if btc=="baj":continue  # BTC bajando = no ir long
+            sc=60
+            if dist_long<0.3:sc+=20
+            if vr>2:sc+=10
+            if btc=="alc":sc+=15
+            if c4>1:sc+=10
+            sc=min(sc,100)
+            sigs=[f"⚡ Pre-breakout alcista ({dist_long:.2f}% del max)",f"📊 Vol {vr:.1f}x creciendo",f"🕯️ Vela verde formándose"]
+            if btc=="alc":sigs.append("₿ BTC confirma alcista")
+            tp1=p*(1+tp/100);sl1=p*(1-sl/100)
+
+        apal=5 if sc>=85 else 3
         hist[k]=datetime.now(ARG)
         return{"sym":sym,"p":fp(p),"sc":sc,"sigs":sigs,"tipo":tipo,"c1":c1,"c4":c4,"vr":vr,"tp":fp(tp1),"sl":fp(sl1),"tp_pct":tp,"sl_pct":sl,"gan":tp-FEES*100,"apal":apal}
     return None
@@ -88,9 +128,9 @@ def run_bg():
     ls.sort(key=lambda x:x["sc"],reverse=True)
     ss.sort(key=lambda x:x["sc"],reverse=True)
     tl,ts=ls[:2],ss[:1]
-    if not tl and not ts:send("🔍 Sin señales SMC en este momento. Mercado sin estructura clara.");return
+    if not tl and not ts:send("🔍 Sin pre-breakouts detectados. Mercado sin señales claras.");return
     hora=now.strftime("%H:%M")
-    msg=f"📡 *PUMP RADAR — {hora} ARG*\n_SMC H1 | BOS · CHoCH · FVG_\n\n"
+    msg=f"⚡ *PUMP RADAR — {hora} ARG*\n_Pre-breakout H1 | Alerta temprana_\n\n"
     for r in tl:
         msg+=f"🟢 *LONG — {r['sym']}* | Score:`{r['sc']}/100`\n📍`{r['p']}` | Vol:`{r['vr']:.1f}x` | 1h:`{r['c1']:+.1f}%` 4h:`{r['c4']:+.1f}%`\n🎯 TP:`{r['tp']}` (+{r['tp_pct']:.1f}%) | 🛑 SL:`{r['sl']}` (-{r['sl_pct']:.1f}%)\n⚡`{r['apal']}x` | 💰`+{r['gan']:.1f}%` neto\n_{', '.join(r['sigs'])}_\n\n"
         dia["l"]+=1
@@ -100,8 +140,7 @@ def run_bg():
     msg+=f"📊 Hoy: {dia['l']} long | {dia['s']} short\n⚠️ _Experimental. No es asesoramiento financiero._"
     send(msg)
 
-def run():
-    threading.Thread(target=run_bg,daemon=True).start()
+def run():threading.Thread(target=run_bg,daemon=True).start()
 
 def listen():
     last=0
@@ -112,17 +151,17 @@ def listen():
                 for u in r.json().get("result",[]):
                     last=u["update_id"]
                     t=(u.get("message")or{}).get("text")or""
-                    if t=="/start":send("👋 *Pump Radar SMC H1*\nBOS · CHoCH · FVG\n9am · 3pm · 8pm ARG\n\n/analizar — análisis ahora\n/resumen — señales de hoy\n/ayuda — cómo operar")
-                    elif t=="/analizar":send("🔍 Analizando 15 pares... Resultado en 1-2 min.");run()
+                    if t=="/start":send("👋 *Pump Radar — Alerta Temprana*\nPre-breakout H1 | BTC como filtro\n9am · 3pm · 8pm ARG\n\n/analizar\n/resumen\n/ayuda")
+                    elif t=="/analizar":send("⚡ Buscando pre-breakouts...");run()
                     elif t=="/resumen":send(f"📊 Hoy: {dia['l']} long | {dia['s']} short")
-                    elif t=="/ayuda":send("📍 Entrada al recibir señal\n🎯 TP dinámico por volatilidad\n🛑 SL — salís sin dudar\n⚡ Apalancamiento sugerido\n\nVerificá en BingX/Bitget antes de entrar.")
+                    elif t=="/ayuda":send("⚡ *Alerta temprana*\nDetecto ANTES de que rompa\n\n📍 Entrada al recibir señal\n🎯 TP dinámico\n🛑 SL ajustado\n₿ BTC filtra la dirección\n\nVerificá en BingX/Bitget antes de entrar.")
         except:pass
         time.sleep(2)
 
 schedule.every().day.at("12:00").do(run)
 schedule.every().day.at("18:00").do(run)
 schedule.every().day.at("23:00").do(run)
-send("✅ *Pump Radar SMC H1*\n15 pares | Resultado en 1-2 min tras /analizar")
+send("✅ *Pump Radar — Alerta Temprana activo*\nPre-breakout H1 | Sin confirmaciones tardías")
 run()
 threading.Thread(target=listen,daemon=True).start()
 while True:schedule.run_pending();time.sleep(30)
