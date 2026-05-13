@@ -35,7 +35,7 @@ def ana(par,sym):
     c1=(c[-1]-c[-2])/max(c[-2],0.001)*100;c4=(c[-1]-c[-5])/max(c[-5],0.001)*100
     mx=max(h[-10:-1]);mn=min(l[-10:-1])
     ds=(p-mn)/max(mn,0.001)*100;dl=(mx-p)/max(p,0.001)*100
-    vv=vr>1.2 and vol[-1]>vol[-2]*1.1
+    vv=vr>1.0
     roja=c[-1]<o[-1];verde=c[-1]>o[-1]
     b=btc()
     fp=lambda x:(f"${x:,.2f}"if x>100 else f"${x:,.4f}"if x>1 else f"${x:,.6f}")
