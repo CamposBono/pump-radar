@@ -8,9 +8,8 @@ Z = pytz.timezone("America/Argentina/Buenos_Aires")
 
 P = [
     ("XBT/USDT","BTC"),("ETH/USDT","ETH"),("SOL/USDT","SOL"),("XRP/USDT","XRP"),
-    ("ADA/USDT","ADA"),("LINK/USDT","LINK"),("AVAX/USDT","AVAX"),("LTC/USDT","LTC"),
-    ("SUI/USDT","SUI"),("BCH/USDT","BCH"),("DOT/USDT","DOT"),("NEAR/USDT","NEAR"),
-    ("INJ/USDT","INJ"),("ARB/USDT","ARB"),("OP/USDT","OP")
+    ("ADA/USDT","ADA"),("LINK/USDT","LINK"),("AVAX/USDT","AVAX"),
+    ("SUI/USDT","SUI"),("DOT/USDT","DOT"),("NEAR/USDT","NEAR")
 ]
 
 D = {"l": 0, "s": 0, "f": ""}
@@ -125,11 +124,11 @@ def zona_valida(price, lows, highs, tipo):
     if tipo == "long":
         zona = min(lows[-15:])
         distancia = (price - zona) / max(zona, 0.001) * 100
-        return 0 <= distancia <= 2.5   # máx 2.5% sobre el soporte
+        return 0 <= distancia <= 5.0   # máx 5% sobre el soporte
     else:
         zona = max(highs[-15:])
         distancia = (zona - price) / max(price, 0.001) * 100
-        return 0 <= distancia <= 2.5   # máx 2.5% bajo la resistencia
+        return 0 <= distancia <= 5.0   # máx 5% bajo la resistencia
 
 def entrada_tardia(closes, tipo, umbral=1.8):
     """
@@ -212,7 +211,7 @@ def ana(par, sym):
             continue
 
         # ── FILTRO 4: No entrada tardía ──
-        if entrada_tardia(closes, tipo, umbral=1.8):
+        if entrada_tardia(closes, tipo, umbral=4.0):
             continue
 
         # ── FILTRO 5: Zona de demanda/oferta válida ──
@@ -220,13 +219,14 @@ def ana(par, sym):
             continue
 
         # ── FILTRO 6: Volumen mínimo ──
-        if vr < 1.2:
+        if vr < 0.8:
             continue
 
-        # ── FILTRO 7: Vela de confirmación ──
-        vela_ok = (closes[-1] > opens[-1]) if tipo == "long" else (closes[-1] < opens[-1])
-        if not vela_ok:
-            continue
+        # ── FILTRO 7: Vela de confirmación (relajado) ──
+        # Solo bloquea si la vela es MUY contraria (>0.5% en contra)
+        vela_cuerpo = (closes[-1] - opens[-1]) / max(opens[-1], 0.001) * 100
+        if tipo == "long"  and vela_cuerpo < -0.5: continue
+        if tipo == "short" and vela_cuerpo >  0.5: continue
 
         # ── SCORE PONDERADO (nuevo esquema) ──────
         sc = 50  # base
@@ -237,7 +237,7 @@ def ana(par, sym):
         elif estructura == "bajista" and tipo == "short":
             sc += 35
         elif estructura == "neutral":
-            sc += 15
+            sc += 22
 
         # Zona de entrada (25 pts)
         zona_ref = min(lows[-15:]) if tipo == "long" else max(highs[-15:])
@@ -272,7 +272,7 @@ def ana(par, sym):
         sc = min(sc, 100)
 
         # ── UMBRAL MÍNIMO ELEVADO ─────────────────
-        if sc < 85:
+        if sc < 65:  # umbral de prueba (subir a 85 en producción)
             continue
 
         # Calcular TP y SL
@@ -396,7 +396,7 @@ schedule.every().day.at("12:00").do(run)
 schedule.every().day.at("18:00").do(run)
 schedule.every().day.at("23:00").do(run)
 
-send("✅ *Pump Radar v2 activo*\nPre-breakout H1 | 15 pares | Estructura validada")
+send("✅ *Pump Radar v2 activo*\nPre-breakout H1 | 10 pares | Umbral 65 (pruebas amplias)")
 run()
 threading.Thread(target=listen, daemon=True).start()
 
