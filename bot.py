@@ -1,4 +1,3 @@
-```python
 import os,requests,time,schedule,threading
 from datetime import datetime,timedelta
 import pytz
@@ -14,6 +13,7 @@ def send(t):
     try:requests.post(f"https://api.telegram.org/bot{T}/sendMessage",json={"chat_id":C,"text":t,"parse_mode":"Markdown"},timeout=10)
     except:pass
 
+# --- OHLC H1 (sin cambios) ---
 def ohlc(par):
     try:
         r=requests.get("https://api.kraken.com/0/public/OHLC",params={"pair":par,"interval":60},timeout=8)
@@ -22,6 +22,31 @@ def ohlc(par):
             return r.json()["result"][k]
     except:pass
     return[]
+
+# --- NUEVO: OHLC H4 ---
+def ohlc_h4(par):
+    try:
+        r=requests.get("https://api.kraken.com/0/public/OHLC",params={"pair":par,"interval":240},timeout=8)
+        if r.ok and not r.json().get("error"):
+            k=list(r.json()["result"].keys())[0]
+            return r.json()["result"][k]
+    except:pass
+    return[]
+
+# --- NUEVO: Direccion H4 por estructura HH/HL o LH/LL ---
+def direccion_h4(par):
+    v=ohlc_h4(par)
+    if len(v)<6:return"n"
+    Hi=[float(x[2])for x in v[-6:]]
+    Lo=[float(x[3])for x in v[-6:]]
+    # Buscar swing highs y lows simples
+    hh=Hi[-1]>Hi[-2] and Hi[-2]>Hi[-3]
+    hl=Lo[-1]>Lo[-2] and Lo[-2]>Lo[-3]
+    lh=Hi[-1]<Hi[-2] and Hi[-2]<Hi[-3]
+    ll=Lo[-1]<Lo[-2] and Lo[-2]<Lo[-3]
+    if hh and hl:return"a"   # alcista
+    if lh and ll:return"b"   # bajista
+    return"n"                # ranging / sin direccion clara
 
 def btc():
     v=ohlc("XBT/USDT")
@@ -80,6 +105,10 @@ def ana(par,sym):
     rng=[abs(C[i]-C[i-1])/C[i-1]*100 for i in range(1,8)]
     vp=sum(rng)/len(rng)if rng else 1.5
     tpp=max(4,min(10,vp*2));slp=max(2,min(4,vp*0.7))
+
+    # --- NUEVO: Contexto H4 ---
+    h4=direccion_h4(par)
+
     for tipo in["long","short"]:
         k=f"{sym}_{tipo}"
         if k in H and datetime.now(Z)-H[k]<timedelta(hours=4):continue
@@ -91,6 +120,13 @@ def ana(par,sym):
         if tipo=="long" and c1<0 and c4<0:continue
         if tipo=="short" and c1>0 and c4>0:continue
         if sc_comp<40:continue
+
+        # --- NUEVO: Filtro H4 — bloquea si H4 contradice la señal ---
+        # Si H4 es bajista, no dar long. Si H4 es alcista, no dar short.
+        # Si H4 es neutral (ranging), la señal pasa pero con score reducido.
+        if tipo=="long" and h4=="b":continue
+        if tipo=="short" and h4=="a":continue
+
         zd=min(Lo[-15:]);zo=max(Hi[-15:])
         dd=(p-zd)/max(zd,0.001)*100;do=(zo-p)/max(p,0.001)*100
         if tipo=="long" and not(0<=dd<=4.0):continue
@@ -102,6 +138,11 @@ def ana(par,sym):
         if est=="a" and tipo=="long":sc+=25
         elif est=="b" and tipo=="short":sc+=25
         else:sc+=8
+
+        # --- NUEVO: Bonus si H4 acompaña, penalizacion si ranging ---
+        if (h4=="a" and tipo=="long") or (h4=="b" and tipo=="short"):sc+=10
+        elif h4=="n":sc-=5  # H4 sin direccion clara, señal menos confiable
+
         dz=dd if tipo=="long"else do
         sc+=20 if dz<1.0 else 12 if dz<2.5 else 4
         if(reg=="u"and tipo=="long")or(reg=="d"and tipo=="short"):sc+=10
@@ -118,9 +159,10 @@ def ana(par,sym):
         em="🟢"if tipo=="long"else"🔴"
         rt={"u":"Trending↑","d":"Trending↓","r":"Ranging"}.get(reg,"—")
         et={"a":"Alcista✅","b":"Bajista✅","n":"Neutral⚠️"}.get(est,"—")
+        h4t={"a":"H4 Alcista✅","b":"H4 Bajista✅","n":"H4 Ranging⚠️"}.get(h4,"—")
         comp_txt=f"🔇 Comp:{sc_comp}pts Rango:{rango_act:.2f}% Hist:{rango_hist:.2f}%"
         apal=3 if reg=="r"else 5 if sc>=88 else 3
-        return{"sym":sym,"p":fp(p),"sc":sc,"tipo":tipo,"c1":c1,"c4":c4,"vr":vr,"tp":fp(tp1),"sl":fp(sl1),"tpp":tpp,"slp":slp,"apal":apal,"em":em,"sg":[comp_txt,f"🏗 {et} | {rt}",f"₿ BTC {'baja'if b=='b'else'sube'if b=='a'else'neutral'}"]}
+        return{"sym":sym,"p":fp(p),"sc":sc,"tipo":tipo,"c1":c1,"c4":c4,"vr":vr,"tp":fp(tp1),"sl":fp(sl1),"tpp":tpp,"slp":slp,"apal":apal,"em":em,"sg":[comp_txt,f"🏗 {et} | {rt}",h4t,f"₿ BTC {'baja'if b=='b'else'sube'if b=='a'else'neutral'}"]}
     return None
 
 def debug_par(par,sym):
@@ -137,8 +179,12 @@ def debug_par(par,sym):
     dd=(p-zd)/max(zd,0.001)*100;do=(zo-p)/max(p,0.001)*100
     en={"a":"alcista","b":"bajista","n":"neutral"}.get(est,"?")
     rn={"u":"trend↑","d":"trend↓","r":"ranging"}.get(reg,"?")
+    # NUEVO: mostrar H4 en debug
+    h4=direccion_h4(par)
+    h4n={"a":"alcista","b":"bajista","n":"ranging"}.get(h4,"?")
     return(f"📊 *{sym}* `{fp(p)}`\n"
-           f"  Est:`{en}` Reg:`{rn}` BTC:`{'b'if b=='b'else'a'if b=='a'else'n'}`\n"
+           f"  Est H1:`{en}` H4:`{h4n}` Reg:`{rn}`\n"
+           f"  BTC:`{'b'if b=='b'else'a'if b=='a'else'n'}`\n"
            f"  Comp:`{sc_comp}pts` Rango:`{rango_act:.2f}%` Hist:`{rango_hist:.2f}%`\n"
            f"  Vol:`{vr:.1f}x` 1h:`{c1:+.1f}%` 4h:`{c4:+.1f}%`\n"
            f"  DistSop:`{dd:.1f}%` DistRes:`{do:.1f}%`")
@@ -158,7 +204,7 @@ def run_bg():
     ls.sort(key=lambda x:x["sc"],reverse=True);ss.sort(key=lambda x:x["sc"],reverse=True)
     tl,ts=ls[:2],ss[:1]
     if not tl and not ts:send("🔍 Sin compresiones validas.");return
-    hora=now.strftime("%H:%M");msg=f"⚡ *PUMP RADAR v3 — {hora} ARG*\n_Pre-breakout por compresion_\n\n"
+    hora=now.strftime("%H:%M");msg=f"⚡ *PUMP RADAR v4 — {hora} ARG*\n_Pre-breakout | H1+H4 alineados_\n\n"
     for r in tl+ts:
         stp="+"if r["tipo"]=="long"else"-";ssl="-"if r["tipo"]=="long"else"+"
         msg+=(f"{r['em']} *{r['tipo'].upper()} — {r['sym']}* | Score:`{r['sc']}/100`\n"
@@ -173,7 +219,7 @@ def run_bg():
 def run():threading.Thread(target=run_bg,daemon=True).start()
 
 def run_debug():
-    send("🔬 *DEBUG v3 Kraken*")
+    send("🔬 *DEBUG v4 Kraken — H1+H4*")
     for par,sym in P:
         if sym!="BTC":send(debug_par(par,sym));time.sleep(0.3)
     send("✅ Debug completo")
@@ -186,19 +232,18 @@ def listen():
             if r.ok:
                 for u in r.json().get("result",[]):
                     last=u["update_id"];t=(u.get("message")or{}).get("text")or""
-                    if t=="/start":send("👋 *Pump Radar v3*\n/analizar /resumen /debug /ayuda")
-                    elif t=="/analizar":send("⚡ Buscando compresiones...");run()
+                    if t=="/start":send("👋 *Pump Radar v4*\n/analizar /resumen /debug /ayuda")
+                    elif t=="/analizar":send("⚡ Buscando compresiones H1+H4...");run()
                     elif t=="/resumen":send(f"📊 Hoy:{D['l']}L {D['s']}S")
                     elif t=="/debug":threading.Thread(target=run_debug,daemon=True).start()
-                    elif t=="/ayuda":send("🔇 Compresion pre-movimiento\n📍 Zona clave obligatoria\n🏗 Estructura filtrada\n₿ BTC filtro\n/debug diagnostico")
+                    elif t=="/ayuda":send("🔇 Compresion pre-movimiento\n📐 H4 como filtro de direccion\n📍 Zona clave obligatoria\n🏗 Estructura H1 filtrada\n₿ BTC filtro\n/debug diagnostico")
         except:pass
         time.sleep(2)
 
 schedule.every().day.at("12:00").do(run)
 schedule.every().day.at("18:00").do(run)
 schedule.every().day.at("23:00").do(run)
-send("✅ *Pump Radar v3 activo* | Kraken | 6 pares")
+send("✅ *Pump Radar v4 activo* | Kraken | H1+H4")
 run()
 threading.Thread(target=listen,daemon=True).start()
 while True:schedule.run_pending();time.sleep(30)
-```
