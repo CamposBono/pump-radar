@@ -5,7 +5,7 @@ import pytz
 T=os.environ.get("TELEGRAM_TOKEN")
 C=os.environ.get("TELEGRAM_CHAT_ID")
 Z=pytz.timezone("America/Argentina/Buenos_Aires")
-P=[("BTCUSDT","BTC"),("ETHUSDT","ETH"),("SOLUSDT","SOL"),("XRPUSDT","XRP"),("ADAUSDT","ADA"),("LINKUSDT","LINK"),("AVAXUSDT","AVAX"),("SUIUSDT","SUI"),("DOTUSDT","DOT"),("NEARUSDT","NEAR")]
+P=[("XBT/USDT","BTC"),("ETH/USDT","ETH"),("SOL/USDT","SOL"),("XRP/USDT","XRP"),("LINK/USDT","LINK"),("AVAX/USDT","AVAX")]
 D={"l":0,"s":0,"f":""}
 H={}
 
@@ -14,16 +14,16 @@ def send(t):
     except:pass
 
 def ohlc(par):
-    # Bybit: velas 1h, últimas 25, orden más reciente primero - invertimos
     try:
-        r=requests.get("https://api.bybit.com/v5/market/kline",params={"symbol":par,"interval":60,"limit":25},timeout=8)
-        if r.ok and r.json().get("retCode")==0:
-            return list(reversed(r.json()["result"]["list"]))
+        r=requests.get("https://api.kraken.com/0/public/OHLC",params={"pair":par,"interval":60},timeout=8)
+        if r.ok and not r.json().get("error"):
+            k=list(r.json()["result"].keys())[0]
+            return r.json()["result"][k]
     except:pass
     return[]
 
 def btc():
-    v=ohlc("BTCUSDT")
+    v=ohlc("XBT/USDT")
     if len(v)<6:return"n"
     c=[float(x[4])for x in v[-6:]]
     a,b=sum(c[:3])/3,sum(c[3:])/3
@@ -48,6 +48,26 @@ def regime(C,p=14):
     if ef>0.45:return"u"if s[-1]>s[0]else"d"
     return"r"
 
+def compresion(Hi,Lo,C,V):
+    # Detecta calma antes de movimiento
+    # 1. Rango de ultimas 4 velas menor a 0.8%
+    rangos=[((Hi[i]-Lo[i])/max(Lo[i],0.001)*100)for i in range(-4,0)]
+    rango_prom=sum(rangos)/len(rangos)
+    comprimido=rango_prom<0.8
+
+    # 2. Volumen bajando en ultimas 4 velas (acumulacion silenciosa)
+    vol_baja=V[-1]<V[-2]<V[-3] or V[-2]<V[-3]<V[-4]
+
+    # 3. Precio moviendose menos que el promedio historico
+    rango_hist=sum((Hi[i]-Lo[i])/max(Lo[i],0.001)*100 for i in range(-12,-4))/8
+    silencio=rango_prom<rango_hist*0.6
+
+    score_comp=0
+    if comprimido:score_comp+=40
+    if vol_baja:score_comp+=30
+    if silencio:score_comp+=30
+    return score_comp,rango_prom,rango_hist
+
 def fp(x):return f"${x:,.2f}"if x>100 else f"${x:,.4f}"if x>1 else f"${x:,.6f}"
 
 def ana(par,sym):
@@ -56,56 +76,75 @@ def ana(par,sym):
     if len(v)<22:return None
     O=[float(x[1])for x in v[-22:]];Hi=[float(x[2])for x in v[-22:]]
     Lo=[float(x[3])for x in v[-22:]];C=[float(x[4])for x in v[-22:]]
-    V=[float(x[5])for x in v[-22:]]  # Bybit: volumen en posicion 5
+    V=[float(x[6])for x in v[-22:]]
     p=C[-1];vr=V[-1]/max(sum(V[-11:-1])/10,0.001)
     c1=(C[-1]-C[-2])/max(C[-2],0.001)*100;c4=(C[-1]-C[-5])/max(C[-5],0.001)*100
     est=estructura(Hi,Lo,C);reg=regime(C);b=btc()
+    sc_comp,rango_act,rango_hist=compresion(Hi,Lo,C,V)
     rng=[abs(C[i]-C[i-1])/C[i-1]*100 for i in range(1,8)]
     vp=sum(rng)/len(rng)if rng else 1.5
     tpp=max(4,min(10,vp*2));slp=max(2,min(4,vp*0.7))
+
     for tipo in["long","short"]:
         k=f"{sym}_{tipo}"
-        if k in H and datetime.now(Z)-H[k]<timedelta(hours=3):continue
+        if k in H and datetime.now(Z)-H[k]<timedelta(hours=4):continue
+
+        # FILTRO 1: estructura mayor alineada
         if tipo=="long" and est=="b":continue
         if tipo=="short" and est=="a":continue
-        if tipo=="long" and reg=="d":continue
-        if tipo=="short" and reg=="u":continue
+
+        # FILTRO 2: BTC no en contra
         if tipo=="long" and b=="b":continue
         if tipo=="short" and b=="a":continue
-        rec=C[-5:];ml=(C[-1]-min(rec))/max(min(rec),0.001)*100;ms=(max(rec)-C[-1])/max(C[-1],0.001)*100
-        if tipo=="long" and ml>4.0:continue
-        if tipo=="short" and ms>4.0:continue
+
+        # FILTRO 3: compresion minima obligatoria (clave para anticipar)
+        if sc_comp<40:continue
+
+        # FILTRO 4: precio cerca de zona clave
         zd=min(Lo[-15:]);zo=max(Hi[-15:])
         dd=(p-zd)/max(zd,0.001)*100;do=(zo-p)/max(p,0.001)*100
-        if tipo=="long" and not(0<=dd<=5.0):continue
-        if tipo=="short" and not(0<=do<=5.0):continue
-        if vr<0.8:continue
-        vc=(C[-1]-O[-1])/max(O[-1],0.001)*100
-        if tipo=="long" and vc<-0.5:continue
-        if tipo=="short" and vc>0.5:continue
-        sc=50
-        if est=="a" and tipo=="long":sc+=35
-        elif est=="b" and tipo=="short":sc+=35
-        else:sc+=22
+        if tipo=="long" and not(0<=dd<=4.0):continue
+        if tipo=="short" and not(0<=do<=4.0):continue
+
+        # FILTRO 5: no en tendencia fuerte ya iniciada (evita entrar tarde)
+        if tipo=="long" and c4>3.0:continue
+        if tipo=="short" and c4<-3.0:continue
+
+        # SCORE — compresion es protagonista
+        sc=40
+
+        # Compresion (40 pts) — el corazon del sistema
+        sc+=int(sc_comp*0.4)
+
+        # Estructura (25 pts)
+        if est=="a" and tipo=="long":sc+=25
+        elif est=="b" and tipo=="short":sc+=25
+        else:sc+=10
+
+        # Zona (20 pts)
         dz=dd if tipo=="long"else do
-        sc+=25 if dz<0.8 else 15 if dz<1.5 else 5
+        sc+=20 if dz<1.0 else 12 if dz<2.5 else 5
+
+        # Regime (10 pts)
         if(reg=="u"and tipo=="long")or(reg=="d"and tipo=="short"):sc+=10
-        elif reg=="r":sc+=3
-        sc+=20 if vr>3 else 13 if vr>2 else 7 if vr>1.5 else 0
-        if tipo=="long" and c4>1:sc+=10
-        elif tipo=="short" and c4<-1:sc+=10
-        elif tipo=="long" and c4>0.3:sc+=5
-        elif tipo=="short" and c4<-0.3:sc+=5
+        elif reg=="r":sc+=4
+
+        # Momentum suave 4H (5 pts) — solo confirmacion leve
+        if tipo=="long" and 0<c4<=2:sc+=5
+        elif tipo=="short" and -2<=c4<0:sc+=5
+
         sc=min(sc,100)
-        if sc<65:continue
+        if sc<68:continue
+
         tp1=p*(1+tpp/100)if tipo=="long"else p*(1-tpp/100)
         sl1=p*(1-slp/100)if tipo=="long"else p*(1+slp/100)
         H[k]=datetime.now(Z)
         em="🟢"if tipo=="long"else"🔴"
         rt={"u":"Trending↑","d":"Trending↓","r":"Ranging"}.get(reg,"—")
-        et={"a":"Estructura alcista✅","b":"Estructura bajista✅","n":"Estructura neutral⚠️"}.get(est,"—")
-        apal=3 if reg=="r"else 5 if sc>=92 else 3
-        return{"sym":sym,"p":fp(p),"sc":sc,"tipo":tipo,"c1":c1,"c4":c4,"vr":vr,"tp":fp(tp1),"sl":fp(sl1),"tpp":tpp,"slp":slp,"apal":apal,"em":em,"sg":[et,f"📊 Vol {vr:.1f}x",f"📈 {rt}",f"₿ BTC {'baja'if b=='b'else'sube'if b=='a'else'neutral'}"]}
+        et={"a":"Alcista✅","b":"Bajista✅","n":"Neutral⚠️"}.get(est,"—")
+        comp_txt=f"🔇 Compresion {sc_comp}% | Rango {rango_act:.2f}% vs hist {rango_hist:.2f}%"
+        apal=3 if reg=="r"else 5 if sc>=88 else 3
+        return{"sym":sym,"p":fp(p),"sc":sc,"tipo":tipo,"c1":c1,"c4":c4,"vr":vr,"tp":fp(tp1),"sl":fp(sl1),"tpp":tpp,"slp":slp,"apal":apal,"em":em,"sg":[comp_txt,f"🏗 Est:{et} Reg:{rt}",f"₿ BTC {'baja'if b=='b'else'sube'if b=='a'else'neutral'}"]}
     return None
 
 def debug_par(par,sym):
@@ -113,27 +152,26 @@ def debug_par(par,sym):
     if not v or len(v)<22:return f"⚠️ {sym}: sin datos ({len(v)if v else 0} velas)"
     O=[float(x[1])for x in v[-22:]];Hi=[float(x[2])for x in v[-22:]]
     Lo=[float(x[3])for x in v[-22:]];C=[float(x[4])for x in v[-22:]]
-    V=[float(x[5])for x in v[-22:]]
+    V=[float(x[6])for x in v[-22:]]
     p=C[-1];vr=V[-1]/max(sum(V[-11:-1])/10,0.001)
     c1=(C[-1]-C[-2])/max(C[-2],0.001)*100;c4=(C[-1]-C[-5])/max(C[-5],0.001)*100
     est=estructura(Hi,Lo,C);reg=regime(C);b=btc()
-    rec=C[-5:];ml=(C[-1]-min(rec))/max(min(rec),0.001)*100;ms=(max(rec)-C[-1])/max(C[-1],0.001)*100
+    sc_comp,rango_act,rango_hist=compresion(Hi,Lo,C,V)
     zd=min(Lo[-15:]);zo=max(Hi[-15:])
     dd=(p-zd)/max(zd,0.001)*100;do=(zo-p)/max(p,0.001)*100
-    vc=(C[-1]-O[-1])/max(O[-1],0.001)*100
     en={"a":"alcista","b":"bajista","n":"neutral"}.get(est,"?")
     rn={"u":"trend↑","d":"trend↓","r":"ranging"}.get(reg,"?")
     return(f"📊 *{sym}* `{fp(p)}`\n"
-           f"  Est:`{en}` Reg:`{rn}` BTC:`{'b'if b=='b'else'a'if b=='a'else'n'}` Vol:`{vr:.1f}x`\n"
-           f"  Vela:`{vc:+.1f}%` 1h:`{c1:+.1f}%` 4h:`{c4:+.1f}%`\n"
-           f"  Mov↑`{ml:.1f}%` Mov↓`{ms:.1f}%`\n"
+           f"  Est:`{en}` Reg:`{rn}` BTC:`{'b'if b=='b'else'a'if b=='a'else'n'}`\n"
+           f"  Compresion:`{sc_comp}pts` Rango:`{rango_act:.2f}%` Hist:`{rango_hist:.2f}%`\n"
+           f"  Vol:`{vr:.1f}x` 1h:`{c1:+.1f}%` 4h:`{c4:+.1f}%`\n"
            f"  DistSop:`{dd:.1f}%` DistRes:`{do:.1f}%`")
 
 def run_bg():
     global D
     now=datetime.now(Z);hoy=now.strftime("%d/%m")
     if D["f"]!=hoy:D={"l":0,"s":0,"f":hoy}
-    if D["l"]>=3 and D["s"]>=2:send("ℹ️ Límite diario alcanzado.");return
+    if D["l"]>=3 and D["s"]>=2:send("ℹ️ Limite diario alcanzado.");return
     ls,ss=[],[]
     for par,sym in P:
         r=ana(par,sym)
@@ -143,8 +181,8 @@ def run_bg():
         time.sleep(0.5)
     ls.sort(key=lambda x:x["sc"],reverse=True);ss.sort(key=lambda x:x["sc"],reverse=True)
     tl,ts=ls[:2],ss[:1]
-    if not tl and not ts:send("🔍 Sin señales. Mercado sin estructura.");return
-    hora=now.strftime("%H:%M");msg=f"⚡ *PUMP RADAR v2 — {hora} ARG*\n_Pre-breakout H1 | Bybit_\n\n"
+    if not tl and not ts:send("🔍 Sin compresiones detectadas.");return
+    hora=now.strftime("%H:%M");msg=f"⚡ *PUMP RADAR v3 — {hora} ARG*\n_Pre-breakout por compresion_\n\n"
     for r in tl+ts:
         stp="+"if r["tipo"]=="long"else"-";ssl="-"if r["tipo"]=="long"else"+"
         msg+=(f"{r['em']} *{r['tipo'].upper()} — {r['sym']}* | Score:`{r['sc']}/100`\n"
@@ -159,7 +197,7 @@ def run_bg():
 def run():threading.Thread(target=run_bg,daemon=True).start()
 
 def run_debug():
-    send("🔬 *DEBUG — Estado pares (Bybit)*")
+    send("🔬 *DEBUG v3 — Compresion por par*")
     for par,sym in P:
         if sym!="BTC":send(debug_par(par,sym));time.sleep(0.3)
     send("✅ Debug completo")
@@ -172,18 +210,18 @@ def listen():
             if r.ok:
                 for u in r.json().get("result",[]):
                     last=u["update_id"];t=(u.get("message")or{}).get("text")or""
-                    if t=="/start":send("👋 *Pump Radar v2*\n/analizar /resumen /debug /ayuda")
-                    elif t=="/analizar":send("⚡ Buscando...");run()
+                    if t=="/start":send("👋 *Pump Radar v3*\n/analizar /resumen /debug /ayuda")
+                    elif t=="/analizar":send("⚡ Buscando compresiones...");run()
                     elif t=="/resumen":send(f"📊 Hoy:{D['l']}L {D['s']}S")
                     elif t=="/debug":threading.Thread(target=run_debug,daemon=True).start()
-                    elif t=="/ayuda":send("📍 Zona validada\n🎯 TP dinámico\n🛑 SL ajustado\n🏗️ Estructura filtrada\n₿ BTC filtro\n/debug diagnostico")
+                    elif t=="/ayuda":send("🔇 Detecta compresion pre-movimiento\n📍 Zona clave obligatoria\n🏗 Estructura filtrada\n₿ BTC filtro\n/debug diagnostico")
         except:pass
         time.sleep(2)
 
 schedule.every().day.at("12:00").do(run)
 schedule.every().day.at("18:00").do(run)
 schedule.every().day.at("23:00").do(run)
-send("✅ *Pump Radar v2 activo* | Bybit | 10 pares | Umbral 65")
+send("✅ *Pump Radar v3 activo* | Kraken | 6 pares | Compresion")
 run()
 threading.Thread(target=listen,daemon=True).start()
 while True:schedule.run_pending();time.sleep(30)
