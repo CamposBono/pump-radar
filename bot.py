@@ -14,11 +14,13 @@ def send(t):
     except:pass
 
 def ohlc(par):
-    # Bybit: velas 1h, últimas 25, orden más reciente primero - invertimos
+    # Bybit V5: categoria spot, intervalo como string
     try:
-        r=requests.get("https://api.bybit.com/v5/market/kline",params={"symbol":par,"interval":60,"limit":25},timeout=8)
-        if r.ok and r.json().get("retCode")==0:
-            return list(reversed(r.json()["result"]["list"]))
+        r=requests.get("https://api.bybit.com/v5/market/kline",params={"category":"linear","symbol":par,"interval":"60","limit":25},timeout=8)
+        if r.ok:
+            d=r.json()
+            if d.get("retCode")==0 and d["result"].get("list"):
+                return list(reversed(d["result"]["list"]))
     except:pass
     return[]
 
@@ -159,7 +161,7 @@ def run_bg():
 def run():threading.Thread(target=run_bg,daemon=True).start()
 
 def run_debug():
-    send("🔬 *DEBUG — Estado pares (Bybit)*")
+    send("🔬 *DEBUG — Estado pares (Bybit Futuros)*")
     for par,sym in P:
         if sym!="BTC":send(debug_par(par,sym));time.sleep(0.3)
     send("✅ Debug completo")
@@ -183,7 +185,7 @@ def listen():
 schedule.every().day.at("12:00").do(run)
 schedule.every().day.at("18:00").do(run)
 schedule.every().day.at("23:00").do(run)
-send("✅ *Pump Radar v2 activo* | Bybit | 10 pares | Umbral 65")
+send("✅ *Pump Radar v2 activo* | Bybit Futuros | 10 pares | Umbral 65")
 run()
 threading.Thread(target=listen,daemon=True).start()
 while True:schedule.run_pending();time.sleep(30)
