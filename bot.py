@@ -5,7 +5,7 @@ import pytz
 T=os.environ.get("TELEGRAM_TOKEN")
 C=os.environ.get("TELEGRAM_CHAT_ID")
 Z=pytz.timezone("America/Argentina/Buenos_Aires")
-P=[("XBT/USDT","BTC"),("ETH/USDT","ETH"),("SOL/USDT","SOL"),("XRP/USDT","XRP"),("ADA/USDT","ADA"),("LINK/USDT","LINK"),("AVAX/USDT","AVAX"),("SUI/USDT","SUI"),("DOT/USDT","DOT"),("NEAR/USDT","NEAR")]
+P=[("BTCUSDT","BTC"),("ETHUSDT","ETH"),("SOLUSDT","SOL"),("XRPUSDT","XRP"),("ADAUSDT","ADA"),("LINKUSDT","LINK"),("AVAXUSDT","AVAX"),("SUIUSDT","SUI"),("DOTUSDT","DOT"),("NEARUSDT","NEAR")]
 D={"l":0,"s":0,"f":""}
 H={}
 
@@ -14,28 +14,29 @@ def send(t):
     except:pass
 
 def ohlc(par):
+    # Bybit: velas 1h, últimas 25, orden más reciente primero - invertimos
     try:
-        r=requests.get("https://api.kraken.com/0/public/OHLC",params={"pair":par,"interval":60},timeout=8)
-        if r.ok and not r.json().get("error"):
-            k=list(r.json()["result"].keys())[0];return r.json()["result"][k]
+        r=requests.get("https://api.bybit.com/v5/market/kline",params={"symbol":par,"interval":60,"limit":25},timeout=8)
+        if r.ok and r.json().get("retCode")==0:
+            return list(reversed(r.json()["result"]["list"]))
     except:pass
     return[]
 
 def btc():
-    v=ohlc("XBT/USDT")
+    v=ohlc("BTCUSDT")
     if len(v)<6:return"n"
     c=[float(x[4])for x in v[-6:]]
     a,b=sum(c[:3])/3,sum(c[3:])/3
     return"b"if b<a*0.998 else"a"if b>a*1.002 else"n"
 
-def estructura(H,L,C):
+def estructura(Hi,Lo,C):
     n=len(C)
     if n<10:return"n"
-    sh=[i for i in range(2,n-2)if H[i]==max(H[max(0,i-2):i+3])]
-    sl=[i for i in range(2,n-2)if L[i]==min(L[max(0,i-2):i+3])]
+    sh=[i for i in range(2,n-2)if Hi[i]==max(Hi[max(0,i-2):i+3])]
+    sl=[i for i in range(2,n-2)if Lo[i]==min(Lo[max(0,i-2):i+3])]
     if len(sh)<2 or len(sl)<2:return"n"
-    hh=H[sh[-1]]>H[sh[-2]];hl=L[sl[-1]]>L[sl[-2]]
-    lh=H[sh[-1]]<H[sh[-2]];ll=L[sl[-1]]<L[sl[-2]]
+    hh=Hi[sh[-1]]>Hi[sh[-2]];hl=Lo[sl[-1]]>Lo[sl[-2]]
+    lh=Hi[sh[-1]]<Hi[sh[-2]];ll=Lo[sl[-1]]<Lo[sl[-2]]
     if hh and hl:return"a"
     if lh and ll:return"b"
     return"n"
@@ -55,7 +56,7 @@ def ana(par,sym):
     if len(v)<22:return None
     O=[float(x[1])for x in v[-22:]];Hi=[float(x[2])for x in v[-22:]]
     Lo=[float(x[3])for x in v[-22:]];C=[float(x[4])for x in v[-22:]]
-    V=[float(x[6])for x in v[-22:]]
+    V=[float(x[5])for x in v[-22:]]  # Bybit: volumen en posicion 5
     p=C[-1];vr=V[-1]/max(sum(V[-11:-1])/10,0.001)
     c1=(C[-1]-C[-2])/max(C[-2],0.001)*100;c4=(C[-1]-C[-5])/max(C[-5],0.001)*100
     est=estructura(Hi,Lo,C);reg=regime(C);b=btc()
@@ -103,7 +104,8 @@ def ana(par,sym):
         em="🟢"if tipo=="long"else"🔴"
         rt={"u":"Trending↑","d":"Trending↓","r":"Ranging"}.get(reg,"—")
         et={"a":"Estructura alcista✅","b":"Estructura bajista✅","n":"Estructura neutral⚠️"}.get(est,"—")
-        return{"sym":sym,"p":fp(p),"sc":sc,"tipo":tipo,"c1":c1,"c4":c4,"vr":vr,"tp":fp(tp1),"sl":fp(sl1),"tpp":tpp,"slp":slp,"apal":5 if sc>=92 else 3,"em":em,"sg":[et,f"📊 Vol {vr:.1f}x",f"📈 {rt}",f"₿ BTC {'baja'if b=='b'else'sube'if b=='a'else'neutral'}"]}
+        apal=3 if reg=="r"else 5 if sc>=92 else 3
+        return{"sym":sym,"p":fp(p),"sc":sc,"tipo":tipo,"c1":c1,"c4":c4,"vr":vr,"tp":fp(tp1),"sl":fp(sl1),"tpp":tpp,"slp":slp,"apal":apal,"em":em,"sg":[et,f"📊 Vol {vr:.1f}x",f"📈 {rt}",f"₿ BTC {'baja'if b=='b'else'sube'if b=='a'else'neutral'}"]}
     return None
 
 def debug_par(par,sym):
@@ -111,7 +113,7 @@ def debug_par(par,sym):
     if not v or len(v)<22:return f"⚠️ {sym}: sin datos ({len(v)if v else 0} velas)"
     O=[float(x[1])for x in v[-22:]];Hi=[float(x[2])for x in v[-22:]]
     Lo=[float(x[3])for x in v[-22:]];C=[float(x[4])for x in v[-22:]]
-    V=[float(x[6])for x in v[-22:]]
+    V=[float(x[5])for x in v[-22:]]
     p=C[-1];vr=V[-1]/max(sum(V[-11:-1])/10,0.001)
     c1=(C[-1]-C[-2])/max(C[-2],0.001)*100;c4=(C[-1]-C[-5])/max(C[-5],0.001)*100
     est=estructura(Hi,Lo,C);reg=regime(C);b=btc()
@@ -142,7 +144,7 @@ def run_bg():
     ls.sort(key=lambda x:x["sc"],reverse=True);ss.sort(key=lambda x:x["sc"],reverse=True)
     tl,ts=ls[:2],ss[:1]
     if not tl and not ts:send("🔍 Sin señales. Mercado sin estructura.");return
-    hora=now.strftime("%H:%M");msg=f"⚡ *PUMP RADAR v2 — {hora} ARG*\n_Pre-breakout H1_\n\n"
+    hora=now.strftime("%H:%M");msg=f"⚡ *PUMP RADAR v2 — {hora} ARG*\n_Pre-breakout H1 | Bybit_\n\n"
     for r in tl+ts:
         stp="+"if r["tipo"]=="long"else"-";ssl="-"if r["tipo"]=="long"else"+"
         msg+=(f"{r['em']} *{r['tipo'].upper()} — {r['sym']}* | Score:`{r['sc']}/100`\n"
@@ -157,7 +159,7 @@ def run_bg():
 def run():threading.Thread(target=run_bg,daemon=True).start()
 
 def run_debug():
-    send("🔬 *DEBUG — Estado pares*")
+    send("🔬 *DEBUG — Estado pares (Bybit)*")
     for par,sym in P:
         if sym!="BTC":send(debug_par(par,sym));time.sleep(0.3)
     send("✅ Debug completo")
@@ -174,14 +176,14 @@ def listen():
                     elif t=="/analizar":send("⚡ Buscando...");run()
                     elif t=="/resumen":send(f"📊 Hoy:{D['l']}L {D['s']}S")
                     elif t=="/debug":threading.Thread(target=run_debug,daemon=True).start()
-                    elif t=="/ayuda":send("📍 Zona validada\n🎯 TP dinámico\n🛑 SL ajustado\n🏗️ Estructura filtrada\n₿ BTC filtro\n/debug diagnóstico")
+                    elif t=="/ayuda":send("📍 Zona validada\n🎯 TP dinámico\n🛑 SL ajustado\n🏗️ Estructura filtrada\n₿ BTC filtro\n/debug diagnostico")
         except:pass
         time.sleep(2)
 
 schedule.every().day.at("12:00").do(run)
 schedule.every().day.at("18:00").do(run)
 schedule.every().day.at("23:00").do(run)
-send("✅ *Pump Radar v2 activo* | 10 pares | Umbral 65")
+send("✅ *Pump Radar v2 activo* | Bybit | 10 pares | Umbral 65")
 run()
 threading.Thread(target=listen,daemon=True).start()
 while True:schedule.run_pending();time.sleep(30)
