@@ -1,3 +1,4 @@
+```python
 import os,requests,time,schedule,threading
 from datetime import datetime,timedelta
 import pytz
@@ -49,21 +50,16 @@ def regime(C,p=14):
     return"r"
 
 def compresion(Hi,Lo,C,V):
-    # Rango de cada vela como % del precio
     rangos=[(Hi[i]-Lo[i])/max(Lo[i],0.001)*100 for i in range(-5,-1)]
     rango_act=sum(rangos)/len(rangos)
-    # Historico de referencia (velas -14 a -5)
     rango_hist=sum((Hi[i]-Lo[i])/max(Lo[i],0.001)*100 for i in range(-14,-5))/9
     if rango_hist<0.001:return 0,rango_act,rango_hist
-    # Ratio de compresion: cuanto mas chico el rango actual vs historico, mas comprimido
     ratio=rango_act/rango_hist
-    # Score real — varia entre pares segun su compresion real
     if ratio<0.4:sc=100
     elif ratio<0.55:sc=80
     elif ratio<0.7:sc=60
     elif ratio<0.85:sc=40
     else:sc=0
-    # Bonus si volumen tambien esta bajando (acumulacion silenciosa)
     if len(V)>=4 and V[-2]<V[-3] and V[-3]<V[-4]:sc=min(sc+10,100)
     return sc,rango_act,rango_hist
 
@@ -84,73 +80,38 @@ def ana(par,sym):
     rng=[abs(C[i]-C[i-1])/C[i-1]*100 for i in range(1,8)]
     vp=sum(rng)/len(rng)if rng else 1.5
     tpp=max(4,min(10,vp*2));slp=max(2,min(4,vp*0.7))
-
     for tipo in["long","short"]:
         k=f"{sym}_{tipo}"
         if k in H and datetime.now(Z)-H[k]<timedelta(hours=4):continue
-
-        # FILTRO 1: volumen minimo obligatorio
         if vr<0.8:continue
-
-        # FILTRO 2: estructura alineada
         if tipo=="long" and est=="b":continue
         if tipo=="short" and est=="a":continue
-
-        # FILTRO 3: BTC no en contra
         if tipo=="long" and b=="b":continue
         if tipo=="short" and b=="a":continue
-
-        # FILTRO 4: momentum no contradictorio
-        # Bloquea long si 1h Y 4h ambos negativos
         if tipo=="long" and c1<0 and c4<0:continue
-        # Bloquea short si 1h Y 4h ambos positivos
         if tipo=="short" and c1>0 and c4>0:continue
-
-        # FILTRO 5: compresion minima real
         if sc_comp<40:continue
-
-        # FILTRO 6: precio cerca de zona clave
         zd=min(Lo[-15:]);zo=max(Hi[-15:])
         dd=(p-zd)/max(zd,0.001)*100;do=(zo-p)/max(p,0.001)*100
         if tipo=="long" and not(0<=dd<=4.0):continue
         if tipo=="short" and not(0<=do<=4.0):continue
-
-        # FILTRO 7: no entrar en movimiento ya iniciado
         if tipo=="long" and c4>3.0:continue
         if tipo=="short" and c4<-3.0:continue
-
-        # SCORE
         sc=30
-
-        # Compresion (35pts) — ahora varia realmente entre pares
         sc+=int(sc_comp*0.35)
-
-        # Estructura (25pts)
         if est=="a" and tipo=="long":sc+=25
         elif est=="b" and tipo=="short":sc+=25
         else:sc+=8
-
-        # Zona (20pts)
         dz=dd if tipo=="long"else do
         sc+=20 if dz<1.0 else 12 if dz<2.5 else 4
-
-        # Regime (10pts)
         if(reg=="u"and tipo=="long")or(reg=="d"and tipo=="short"):sc+=10
         elif reg=="r":sc+=3
-
-        # Volumen (5pts) — solo bonus, no protagonista
         sc+=5 if vr>2.0 else 3 if vr>1.5 else 1
-
-        # Momentum suave (5pts)
         if tipo=="long" and 0<c4<=3:sc+=5
         elif tipo=="short" and -3<=c4<0:sc+=5
-
-        # Penalizacion por volumen bajo
         if vr<1.0:sc=int(sc*0.85)
-
         sc=min(sc,100)
         if sc<68:continue
-
         tp1=p*(1+tpp/100)if tipo=="long"else p*(1-tpp/100)
         sl1=p*(1-slp/100)if tipo=="long"else p*(1+slp/100)
         H[k]=datetime.now(Z)
@@ -212,7 +173,7 @@ def run_bg():
 def run():threading.Thread(target=run_bg,daemon=True).start()
 
 def run_debug():
-    send("🔬 *DEBUG v3*")
+    send("🔬 *DEBUG v3 Kraken*")
     for par,sym in P:
         if sym!="BTC":send(debug_par(par,sym));time.sleep(0.3)
     send("✅ Debug completo")
@@ -240,3 +201,4 @@ send("✅ *Pump Radar v3 activo* | Kraken | 6 pares")
 run()
 threading.Thread(target=listen,daemon=True).start()
 while True:schedule.run_pending();time.sleep(30)
+```
