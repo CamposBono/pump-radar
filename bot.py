@@ -35,17 +35,13 @@ def sesgo_diario(par):
     if hh and hl and Cl[-1]>ma:return"a"
     return"n"
 
-def rsi_h4(par,p=20):
+def roc_h4(par,n=10):
+    # Rate of Change en H4
     v=ohlc(par,240)
-    if len(v)<p+2:return 50
-    Cl=[float(x[4])for x in v[-(p+2):]]
-    ganancias=[max(Cl[i]-Cl[i-1],0)for i in range(1,len(Cl))]
-    perdidas=[max(Cl[i-1]-Cl[i],0)for i in range(1,len(Cl))]
-    ag=sum(ganancias)/len(ganancias)
-    ap=sum(perdidas)/len(perdidas)
-    if ap==0:return 100
-    rs=ag/ap
-    return round(100-100/(1+rs),1)
+    if len(v)<n+1:return 0
+    Cl=[float(x[4])for x in v[-(n+1):]]
+    if Cl[0]==0:return 0
+    return round((Cl[-1]-Cl[0])/Cl[0]*100,2)
 
 def fibonacci_h4(par,tipo):
     v=ohlc(par,240)
@@ -137,6 +133,11 @@ def sesion():
 
 def fp(x):return f"${x:,.2f}"if x>100 else f"${x:,.4f}"if x>1 else f"${x:,.6f}"
 
+def roc_txt(roc):
+    if abs(roc)<0.5:return f"ROC:{roc}%🔇"
+    if roc>0:return f"ROC:{roc}%↑"
+    return f"ROC:{roc}%↓"
+
 def ana(par,sym,forzar=False):
     ses,umbral_ses=sesion()
     if ses=="off" and not forzar:return None
@@ -154,7 +155,7 @@ def ana(par,sym,forzar=False):
     b="n"if sym=="BTC"else btc_ctx()
     sc_c,ra,rh=compresion_h1(par)
     liq=zona_liquidez_h1(par,p)
-    rsi=rsi_h4(par)
+    roc=roc_h4(par)
     for tipo in["long","short"]:
         k=f"{sym}_{tipo}"
         if k in H and datetime.now(Z)-H[k]<timedelta(hours=4):continue
@@ -176,14 +177,15 @@ def ana(par,sym,forzar=False):
         ratio=2.5 if a_favor else 1.8
         tp_pct=sl_pct*ratio
         tp1=p*(1+tp_pct/100)if tipo=="long"else p*(1-tp_pct/100)
+        # SCORE
         sc=30+int(sc_c*0.35)
         sc+=25 if fib else 0
         sc+=15 if a_favor else-15 if contra else 0
         sc+=10 if liq else 0
-        if tipo=="long":
-            sc+=15 if rsi<35 else 8 if rsi<45 else 0 if rsi<55 else-10
-        else:
-            sc+=15 if rsi>65 else 8 if rsi>55 else 0 if rsi>45 else-10
+        # ROC como confirmador
+        if abs(roc)<0.5:sc+=15  # compresion confirmada en H4
+        elif(roc<0 and tipo=="short")or(roc>0 and tipo=="long"):sc+=10  # momentum alineado
+        elif(roc>0 and tipo=="short")or(roc<0 and tipo=="long"):sc-=10  # momentum contra
         sc+=10 if vr>1.5 else 5 if vr>0.8 else-10 if vr<0.3 else 0
         sc+=5 if tipo=="long"and 0<c4<=3 else 5 if tipo=="short"and-3<=c4<0 else 0
         sc+=5 if ses=="ny"else 3 if ses=="eu"else 1 if ses=="asia"else 0
@@ -196,10 +198,9 @@ def ana(par,sym,forzar=False):
         em="🟢"if tipo=="long"else"🔴"
         sdt={"a":"📈Alc","b":"📉Baj","n":"➡️Neu"}.get(sd,"")
         fibt="Fib✅"if fib else""
-        rsit=f"RSI:{rsi}"
         liqt="Liq✅"if liq else""
         apal=5 if sc>=85 else 3
-        tags=[sdt,rsit]
+        tags=[sdt,roc_txt(roc)]
         if fibt:tags.append(fibt)
         if liqt:tags.append(liqt)
         tags.append(f"Vol:{vr:.1f}x|{ses.upper()}")
@@ -221,18 +222,18 @@ def dbg(par,sym):
     sd=sesgo_diario(par)
     sc_c,ra,rh=compresion_h1(par)
     liq=zona_liquidez_h1(par,p)
-    fib_l,f618l,_=fibonacci_h4(par,"long")
-    fib_s,f618s,_=fibonacci_h4(par,"short")
+    fib_l,_,_=fibonacci_h4(par,"long")
+    fib_s,_,_=fibonacci_h4(par,"short")
     cerca_l=fib_cercano(par,"long")
     cerca_s=fib_cercano(par,"short")
-    rsi=rsi_h4(par)
+    roc=roc_h4(par)
     ses,_=sesion()
     sdn={"a":"alc","b":"baj","n":"neu"}.get(sd,"?")
-    rsi_txt="sobrevendido"if rsi<35 else"sobrecomprado"if rsi>65 else"neutral"
+    roc_desc="comprimido🔇"if abs(roc)<0.5 else"sube↑"if roc>0 else"baja↓"
     return(f"📊*{sym}*`{fp(p)}`\n"
            f"Diario:`{sdn}` Ses:`{ses}`\n"
            f"Comp H1:`{sc_c}pts` Vol:`{vr:.1f}x`\n"
-           f"RSI H4:`{rsi}` ({rsi_txt})\n"
+           f"ROC H4:`{roc}%` ({roc_desc})\n"
            f"Fib L:{'✅'if fib_l else'cerca'if cerca_l else'❌'}"
            f" S:{'✅'if fib_s else'cerca'if cerca_s else'❌'}\n"
            f"Liq:{'✅'if liq else'❌'}\n"
@@ -253,10 +254,10 @@ def run_bg(forzar=False):
             sc_c,_,_=compresion_h1(par)
             cerca_l=fib_cercano(par,"long")
             cerca_s=fib_cercano(par,"short")
-            rsi=rsi_h4(par)
+            roc=roc_h4(par)
             if sc_c>=70 and(cerca_l or cerca_s):
                 dir="LONG"if cerca_l else"SHORT"
-                alertas.append(f"⚠️*{sym}*`{fp(p)}`Comp:{sc_c}pts+Fib cercano+RSI:{rsi}→{dir}")
+                alertas.append(f"⚠️*{sym}*`{fp(p)}`Comp:{sc_c}pts+Fib cercano+ROC:{roc}%→{dir}")
         r=ana(par,sym,forzar)
         if r:
             if r["tipo"]=="long"and D["l"]<4:ls.append(r)
@@ -271,7 +272,7 @@ def run_bg(forzar=False):
         else:
             send("🔍Sin condiciones detectadas")
         return
-    msg=f"⚡*PUMP RADAR v7.2—{now.strftime('%H:%M')}ARG*\n_H1+H4|Fib|RSI corregido_\n\n"
+    msg=f"⚡*PUMP RADAR v7.3—{now.strftime('%H:%M')}ARG*\n_H1+H4|Fib|ROC_\n\n"
     for r in tl+ts:
         s="+";sl="-"
         if r["tipo"]=="short":s="-";sl="+"
@@ -288,7 +289,7 @@ def run(forzar=False):
     threading.Thread(target=lambda:run_bg(forzar),daemon=True).start()
 
 def run_debug():
-    send("🔬*DEBUG v7.2—RSI corregido p=20*")
+    send("🔬*DEBUG v7.3—H1+H4|Fib|ROC*")
     for par,sym in P:send(dbg(par,sym));time.sleep(0.5)
     send("✅Debug completo")
 
@@ -301,11 +302,11 @@ def listen():
             if r.ok:
                 for u in r.json().get("result",[]):
                     last=u["update_id"];t=(u.get("message")or{}).get("text")or""
-                    if t=="/start":send("👋*Pump Radar v7.2*\n/analizar /resumen /debug /ayuda")
+                    if t=="/start":send("👋*Pump Radar v7.3*\n/analizar /resumen /debug /ayuda")
                     elif t=="/analizar":run(forzar=True)
                     elif t=="/resumen":send(f"📊Hoy:{D['l']}L {D['s']}S")
                     elif t=="/debug":threading.Thread(target=run_debug,daemon=True).start()
-                    elif t=="/ayuda":send("⏰10:00|13:30|20:30 ARG\nH1+H4|Fib|RSI H4\n/analizar fuerza análisis\n/debug diagnóstico")
+                    elif t=="/ayuda":send("⏰10:00|13:30|20:30 ARG\nH1+H4|Fib|ROC H4\n/analizar fuerza análisis\n/debug diagnóstico")
         except:pass
         time.sleep(2)
 
@@ -313,7 +314,7 @@ schedule.every().day.at("13:00").do(run)
 schedule.every().day.at("16:30").do(run)
 schedule.every().day.at("23:30").do(run)
 
-send("✅*Pump Radar v7.2*|RSI corregido p=20|Coinbase|H1+H4")
+send("✅*Pump Radar v7.3*|Coinbase|H1+H4|Fib|ROC")
 run(forzar=True)
 threading.Thread(target=listen,daemon=True).start()
 while True:schedule.run_pending();time.sleep(30)
