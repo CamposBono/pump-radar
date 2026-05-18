@@ -13,7 +13,7 @@ app=Flask(__name__)
 
 @app.route("/")
 def home():
-    return"Pump Radar v7.4 activo",200
+    return"Pump Radar v7.5 activo",200
 
 def send(t):
     try:requests.post(f"https://api.telegram.org/bot{T}/sendMessage",json={"chat_id":C,"text":t,"parse_mode":"Markdown"},timeout=10)
@@ -47,50 +47,6 @@ def roc_h4(par,n=10):
     Cl=[float(x[4])for x in v[-(n+1):]]
     if Cl[0]==0:return 0
     return round((Cl[-1]-Cl[0])/Cl[0]*100,2)
-
-def fibonacci_h4(par,tipo):
-    v=ohlc(par,240)
-    if len(v)<30:return False,0,0
-    Hi=[float(x[2])for x in v[-40:]]
-    Lo=[float(x[3])for x in v[-40:]]
-    Cl=[float(x[4])for x in v[-40:]]
-    p=Cl[-1]
-    if tipo=="long":
-        sw_lo=min(Lo);idx=Lo.index(sw_lo)
-        sw_hi=max(Hi[idx:])
-        if sw_hi<=sw_lo:return False,0,0
-        rng=sw_hi-sw_lo
-        if rng/sw_lo*100<0.3:return False,0,0
-        f618=sw_hi-rng*0.618;f705=sw_hi-rng*0.705
-        return f705<=p<=f618,f618,f705
-    else:
-        sw_hi=max(Hi);idx=Hi.index(sw_hi)
-        sw_lo=min(Lo[idx:])
-        if sw_lo>=sw_hi:return False,0,0
-        rng=sw_hi-sw_lo
-        if rng/sw_hi*100<0.3:return False,0,0
-        f618=sw_lo+rng*0.618;f705=sw_lo+rng*0.705
-        return f618<=p<=f705,f618,f705
-
-def fib_cercano(par,tipo,umbral=3.0):
-    v=ohlc(par,240)
-    if len(v)<30:return False
-    Hi=[float(x[2])for x in v[-40:]]
-    Lo=[float(x[3])for x in v[-40:]]
-    Cl=[float(x[4])for x in v[-40:]]
-    p=Cl[-1]
-    if tipo=="long":
-        sw_lo=min(Lo);idx=Lo.index(sw_lo)
-        sw_hi=max(Hi[idx:])
-        if sw_hi<=sw_lo or(sw_hi-sw_lo)/sw_lo*100<0.3:return False
-        f618=sw_hi-(sw_hi-sw_lo)*0.618
-        return abs(p-f618)/max(p,0.001)*100<umbral
-    else:
-        sw_hi=max(Hi);idx=Hi.index(sw_hi)
-        sw_lo=min(Lo[idx:])
-        if sw_lo>=sw_hi or(sw_hi-sw_lo)/sw_hi*100<0.3:return False
-        f618=sw_lo+(sw_hi-sw_lo)*0.618
-        return abs(p-f618)/max(p,0.001)*100<umbral
 
 def compresion_h1(par):
     v=ohlc(par,60)
@@ -132,8 +88,8 @@ def btc_ctx():
 def sesion():
     h=datetime.now(Z).hour
     if 10<=h<14:return"ny",65
-    if 5<=h<10:return"eu",68
-    if h>=20 or h<2:return"asia",72
+    if 5<=h<10:return"eu",65
+    if h>=20 or h<2:return"asia",68
     return"off",65
 
 def fp(x):return f"${x:,.2f}"if x>100 else f"${x:,.4f}"if x>1 else f"${x:,.6f}"
@@ -167,7 +123,6 @@ def ana(par,sym,forzar=False):
         if tipo=="short"and c1>0 and c4>0:continue
         if tipo=="long"and c4>3:continue
         if tipo=="short"and c4<-3:continue
-        fib,f618,f705=fibonacci_h4(par,tipo)
         a_favor=(sd=="b"and tipo=="short")or(sd=="a"and tipo=="long")
         contra=(sd=="b"and tipo=="long")or(sd=="a"and tipo=="short")
         sl_est=sl_estructural(par,tipo)
@@ -178,7 +133,6 @@ def ana(par,sym,forzar=False):
         tp_pct=sl_pct*ratio
         tp1=p*(1+tp_pct/100)if tipo=="long"else p*(1-tp_pct/100)
         sc=30+int(sc_c*0.35)
-        sc+=25 if fib else 0
         sc+=15 if a_favor else-15 if contra else 0
         sc+=10 if liq else 0
         if abs(roc)<0.5:sc+=15
@@ -189,18 +143,16 @@ def ana(par,sym,forzar=False):
         sc+=5 if ses=="ny"else 3 if ses=="eu"else 1 if ses=="asia"else 0
         if vr<1:sc=int(sc*0.92)
         sc=min(sc,100)
-        umbral=umbral_ses if not forzar else 60
-        if contra:umbral=max(umbral,78)
+        umbral=umbral_ses if not forzar else 58
+        if contra:umbral=max(umbral,75)
         if sc<umbral:continue
         H[k]=datetime.now(Z)
         em="🟢"if tipo=="long"else"🔴"
         sdt={"a":"📈Alc","b":"📉Baj","n":"➡️Neu"}.get(sd,"")
-        fibt="Fib✅"if fib else""
         roct=f"ROC:{roc}%🔇"if abs(roc)<0.5 else f"ROC:{roc}%↑"if roc>0 else f"ROC:{roc}%↓"
         liqt="Liq✅"if liq else""
         apal=5 if sc>=85 else 3
         tags=[sdt,roct]
-        if fibt:tags.append(fibt)
         if liqt:tags.append(liqt)
         tags.append(f"Vol:{vr:.1f}x|{ses.upper()}")
         return{"sym":sym,"p":fp(p),"sc":sc,"tipo":tipo,"c1":c1,"c4":c4,"vr":vr,
@@ -221,10 +173,6 @@ def dbg(par,sym):
     sd=sesgo_diario(par)
     sc_c,ra,rh=compresion_h1(par)
     liq=zona_liquidez_h1(par,p)
-    fib_l,_,_=fibonacci_h4(par,"long")
-    fib_s,_,_=fibonacci_h4(par,"short")
-    cerca_l=fib_cercano(par,"long")
-    cerca_s=fib_cercano(par,"short")
     roc=roc_h4(par)
     ses,_=sesion()
     sdn={"a":"alc","b":"baj","n":"neu"}.get(sd,"?")
@@ -233,8 +181,6 @@ def dbg(par,sym):
            f"Diario:`{sdn}` Ses:`{ses}`\n"
            f"Comp H1:`{sc_c}pts` Vol:`{vr:.1f}x`\n"
            f"ROC H4:`{roc}%` ({rocd})\n"
-           f"Fib L:{'✅'if fib_l else'cerca'if cerca_l else'❌'}"
-           f" S:{'✅'if fib_s else'cerca'if cerca_s else'❌'}\n"
            f"Liq:{'✅'if liq else'❌'}\n"
            f"1h:`{c1:+.1f}%` 4h:`{c4:+.1f}%`")
 
@@ -251,12 +197,12 @@ def run_bg(forzar=False):
             Cl=[float(x[4])for x in v1h[-22:]]
             p=Cl[-1]
             sc_c,_,_=compresion_h1(par)
-            cerca_l=fib_cercano(par,"long")
-            cerca_s=fib_cercano(par,"short")
             roc=roc_h4(par)
-            if sc_c>=70 and(cerca_l or cerca_s):
-                dir="LONG"if cerca_l else"SHORT"
-                alertas.append(f"⚠️*{sym}*`{fp(p)}`Comp:{sc_c}pts+Fib cercano+ROC:{roc}%→{dir}")
+            sd=sesgo_diario(par)
+            # Pre-alerta solo con compresion alta — sin Fibonacci
+            if sc_c>=70:
+                dir="SHORT"if sd=="b"else"LONG"if sd=="a"else"⚠️"
+                alertas.append(f"⚠️*{sym}*`{fp(p)}`Comp:{sc_c}pts ROC:{roc}%→{dir}")
         r=ana(par,sym,forzar)
         if r:
             if r["tipo"]=="long"and D["l"]<4:ls.append(r)
@@ -269,9 +215,9 @@ def run_bg(forzar=False):
         if alertas:
             send("🔍*Sin señales — Pre-alertas:*\n"+"\n".join(alertas))
         else:
-            send("🔍Sin condiciones detectadas")
+            send("🔍Sin condiciones")
         return
-    msg=f"⚡*PUMP RADAR v7.4—{now.strftime('%H:%M')}ARG*\n_H1+H4|Fib|ROC_\n\n"
+    msg=f"⚡*PUMP RADAR v7.5—{now.strftime('%H:%M')}ARG*\n_H1+H4|ROC|Sin Fib_\n\n"
     for r in tl+ts:
         s="+";sl="-"
         if r["tipo"]=="short":s="-";sl="+"
@@ -288,7 +234,7 @@ def run(forzar=False):
     threading.Thread(target=lambda:run_bg(forzar),daemon=True).start()
 
 def run_debug():
-    send("🔬*DEBUG v7.4*")
+    send("🔬*DEBUG v7.5—Sin Fib|ROC|Comp H1*")
     for par,sym in P:send(dbg(par,sym));time.sleep(0.5)
     send("✅Debug completo")
 
@@ -301,11 +247,11 @@ def listen():
             if r.ok:
                 for u in r.json().get("result",[]):
                     last=u["update_id"];t=(u.get("message")or{}).get("text")or""
-                    if t=="/start":send("👋*Pump Radar v7.4*\n/analizar /resumen /debug /ayuda")
+                    if t=="/start":send("👋*Pump Radar v7.5*\n/analizar /resumen /debug /ayuda")
                     elif t=="/analizar":run(forzar=True)
                     elif t=="/resumen":send(f"📊Hoy:{D['l']}L {D['s']}S")
                     elif t=="/debug":threading.Thread(target=run_debug,daemon=True).start()
-                    elif t=="/ayuda":send("⏰10:00|13:30|20:30 ARG\n/analizar fuerza análisis\n/debug diagnóstico")
+                    elif t=="/ayuda":send("⏰10:00|13:30|20:30 ARG\n/analizar fuerza\n/debug diagnóstico")
         except:pass
         time.sleep(2)
 
@@ -313,7 +259,6 @@ def servidor():
     port=int(os.environ.get("PORT",8080))
     app.run(host="0.0.0.0",port=port,use_reloader=False)
 
-# Scheduler robusto — verifica hora en cada ciclo
 def scheduler():
     ultima=""
     while True:
@@ -323,7 +268,7 @@ def scheduler():
             run()
         time.sleep(30)
 
-send("✅*Pump Radar v7.4*|Coinbase|H1+H4|Fib|ROC|Scheduler robusto")
+send("✅*Pump Radar v7.5*|Sin Fib|ROC|Comp H1|Scheduler robusto")
 run(forzar=True)
 threading.Thread(target=listen,daemon=True).start()
 threading.Thread(target=scheduler,daemon=True).start()
