@@ -1,5 +1,6 @@
-import os,requests,time,schedule,threading
+import os,requests,time,threading
 from datetime import datetime,timedelta
+from flask import Flask
 import pytz
 
 T=os.environ.get("TELEGRAM_TOKEN")
@@ -8,6 +9,11 @@ Z=pytz.timezone("America/Argentina/Buenos_Aires")
 P=[("BTC-USD","BTC"),("ETH-USD","ETH"),("SOL-USD","SOL"),("XRP-USD","XRP"),("ADA-USD","ADA")]
 D={"l":0,"s":0,"f":""}
 H={}
+app=Flask(__name__)
+
+@app.route("/")
+def home():
+    return"Pump Radar v7.4 activo",200
 
 def send(t):
     try:requests.post(f"https://api.telegram.org/bot{T}/sendMessage",json={"chat_id":C,"text":t,"parse_mode":"Markdown"},timeout=10)
@@ -36,7 +42,6 @@ def sesgo_diario(par):
     return"n"
 
 def roc_h4(par,n=10):
-    # Rate of Change en H4
     v=ohlc(par,240)
     if len(v)<n+1:return 0
     Cl=[float(x[4])for x in v[-(n+1):]]
@@ -55,7 +60,7 @@ def fibonacci_h4(par,tipo):
         sw_hi=max(Hi[idx:])
         if sw_hi<=sw_lo:return False,0,0
         rng=sw_hi-sw_lo
-        if rng/sw_lo*100<0.8:return False,0,0
+        if rng/sw_lo*100<0.3:return False,0,0
         f618=sw_hi-rng*0.618;f705=sw_hi-rng*0.705
         return f705<=p<=f618,f618,f705
     else:
@@ -63,7 +68,7 @@ def fibonacci_h4(par,tipo):
         sw_lo=min(Lo[idx:])
         if sw_lo>=sw_hi:return False,0,0
         rng=sw_hi-sw_lo
-        if rng/sw_hi*100<0.8:return False,0,0
+        if rng/sw_hi*100<0.3:return False,0,0
         f618=sw_lo+rng*0.618;f705=sw_lo+rng*0.705
         return f618<=p<=f705,f618,f705
 
@@ -77,13 +82,13 @@ def fib_cercano(par,tipo,umbral=3.0):
     if tipo=="long":
         sw_lo=min(Lo);idx=Lo.index(sw_lo)
         sw_hi=max(Hi[idx:])
-        if sw_hi<=sw_lo or(sw_hi-sw_lo)/sw_lo*100<0.8:return False
+        if sw_hi<=sw_lo or(sw_hi-sw_lo)/sw_lo*100<0.3:return False
         f618=sw_hi-(sw_hi-sw_lo)*0.618
         return abs(p-f618)/max(p,0.001)*100<umbral
     else:
         sw_hi=max(Hi);idx=Hi.index(sw_hi)
         sw_lo=min(Lo[idx:])
-        if sw_lo>=sw_hi or(sw_hi-sw_lo)/sw_hi*100<0.8:return False
+        if sw_lo>=sw_hi or(sw_hi-sw_lo)/sw_hi*100<0.3:return False
         f618=sw_lo+(sw_hi-sw_lo)*0.618
         return abs(p-f618)/max(p,0.001)*100<umbral
 
@@ -133,14 +138,9 @@ def sesion():
 
 def fp(x):return f"${x:,.2f}"if x>100 else f"${x:,.4f}"if x>1 else f"${x:,.6f}"
 
-def roc_txt(roc):
-    if abs(roc)<0.5:return f"ROC:{roc}%🔇"
-    if roc>0:return f"ROC:{roc}%↑"
-    return f"ROC:{roc}%↓"
-
 def ana(par,sym,forzar=False):
     ses,umbral_ses=sesion()
-    if ses=="off" and not forzar:return None
+    if ses=="off"and not forzar:return None
     v1h=ohlc(par,60)
     if len(v1h)<22:return None
     Cl=[float(x[4])for x in v1h[-22:]]
@@ -161,12 +161,12 @@ def ana(par,sym,forzar=False):
         if k in H and datetime.now(Z)-H[k]<timedelta(hours=4):continue
         if sc_c<40:continue
         if sym!="BTC":
-            if tipo=="long" and b=="b":continue
-            if tipo=="short" and b=="a":continue
-        if tipo=="long" and c1<0 and c4<0:continue
-        if tipo=="short" and c1>0 and c4>0:continue
-        if tipo=="long" and c4>3:continue
-        if tipo=="short" and c4<-3:continue
+            if tipo=="long"and b=="b":continue
+            if tipo=="short"and b=="a":continue
+        if tipo=="long"and c1<0 and c4<0:continue
+        if tipo=="short"and c1>0 and c4>0:continue
+        if tipo=="long"and c4>3:continue
+        if tipo=="short"and c4<-3:continue
         fib,f618,f705=fibonacci_h4(par,tipo)
         a_favor=(sd=="b"and tipo=="short")or(sd=="a"and tipo=="long")
         contra=(sd=="b"and tipo=="long")or(sd=="a"and tipo=="short")
@@ -177,15 +177,13 @@ def ana(par,sym,forzar=False):
         ratio=2.5 if a_favor else 1.8
         tp_pct=sl_pct*ratio
         tp1=p*(1+tp_pct/100)if tipo=="long"else p*(1-tp_pct/100)
-        # SCORE
         sc=30+int(sc_c*0.35)
         sc+=25 if fib else 0
         sc+=15 if a_favor else-15 if contra else 0
         sc+=10 if liq else 0
-        # ROC como confirmador
-        if abs(roc)<0.5:sc+=15  # compresion confirmada en H4
-        elif(roc<0 and tipo=="short")or(roc>0 and tipo=="long"):sc+=10  # momentum alineado
-        elif(roc>0 and tipo=="short")or(roc<0 and tipo=="long"):sc-=10  # momentum contra
+        if abs(roc)<0.5:sc+=15
+        elif(roc<0 and tipo=="short")or(roc>0 and tipo=="long"):sc+=10
+        elif(roc>0 and tipo=="short")or(roc<0 and tipo=="long"):sc-=10
         sc+=10 if vr>1.5 else 5 if vr>0.8 else-10 if vr<0.3 else 0
         sc+=5 if tipo=="long"and 0<c4<=3 else 5 if tipo=="short"and-3<=c4<0 else 0
         sc+=5 if ses=="ny"else 3 if ses=="eu"else 1 if ses=="asia"else 0
@@ -198,9 +196,10 @@ def ana(par,sym,forzar=False):
         em="🟢"if tipo=="long"else"🔴"
         sdt={"a":"📈Alc","b":"📉Baj","n":"➡️Neu"}.get(sd,"")
         fibt="Fib✅"if fib else""
+        roct=f"ROC:{roc}%🔇"if abs(roc)<0.5 else f"ROC:{roc}%↑"if roc>0 else f"ROC:{roc}%↓"
         liqt="Liq✅"if liq else""
         apal=5 if sc>=85 else 3
-        tags=[sdt,roc_txt(roc)]
+        tags=[sdt,roct]
         if fibt:tags.append(fibt)
         if liqt:tags.append(liqt)
         tags.append(f"Vol:{vr:.1f}x|{ses.upper()}")
@@ -229,11 +228,11 @@ def dbg(par,sym):
     roc=roc_h4(par)
     ses,_=sesion()
     sdn={"a":"alc","b":"baj","n":"neu"}.get(sd,"?")
-    roc_desc="comprimido🔇"if abs(roc)<0.5 else"sube↑"if roc>0 else"baja↓"
+    rocd="comprimido🔇"if abs(roc)<0.5 else"sube↑"if roc>0 else"baja↓"
     return(f"📊*{sym}*`{fp(p)}`\n"
            f"Diario:`{sdn}` Ses:`{ses}`\n"
            f"Comp H1:`{sc_c}pts` Vol:`{vr:.1f}x`\n"
-           f"ROC H4:`{roc}%` ({roc_desc})\n"
+           f"ROC H4:`{roc}%` ({rocd})\n"
            f"Fib L:{'✅'if fib_l else'cerca'if cerca_l else'❌'}"
            f" S:{'✅'if fib_s else'cerca'if cerca_s else'❌'}\n"
            f"Liq:{'✅'if liq else'❌'}\n"
@@ -272,7 +271,7 @@ def run_bg(forzar=False):
         else:
             send("🔍Sin condiciones detectadas")
         return
-    msg=f"⚡*PUMP RADAR v7.3—{now.strftime('%H:%M')}ARG*\n_H1+H4|Fib|ROC_\n\n"
+    msg=f"⚡*PUMP RADAR v7.4—{now.strftime('%H:%M')}ARG*\n_H1+H4|Fib|ROC_\n\n"
     for r in tl+ts:
         s="+";sl="-"
         if r["tipo"]=="short":s="-";sl="+"
@@ -289,7 +288,7 @@ def run(forzar=False):
     threading.Thread(target=lambda:run_bg(forzar),daemon=True).start()
 
 def run_debug():
-    send("🔬*DEBUG v7.3—H1+H4|Fib|ROC*")
+    send("🔬*DEBUG v7.4*")
     for par,sym in P:send(dbg(par,sym));time.sleep(0.5)
     send("✅Debug completo")
 
@@ -302,19 +301,31 @@ def listen():
             if r.ok:
                 for u in r.json().get("result",[]):
                     last=u["update_id"];t=(u.get("message")or{}).get("text")or""
-                    if t=="/start":send("👋*Pump Radar v7.3*\n/analizar /resumen /debug /ayuda")
+                    if t=="/start":send("👋*Pump Radar v7.4*\n/analizar /resumen /debug /ayuda")
                     elif t=="/analizar":run(forzar=True)
                     elif t=="/resumen":send(f"📊Hoy:{D['l']}L {D['s']}S")
                     elif t=="/debug":threading.Thread(target=run_debug,daemon=True).start()
-                    elif t=="/ayuda":send("⏰10:00|13:30|20:30 ARG\nH1+H4|Fib|ROC H4\n/analizar fuerza análisis\n/debug diagnóstico")
+                    elif t=="/ayuda":send("⏰10:00|13:30|20:30 ARG\n/analizar fuerza análisis\n/debug diagnóstico")
         except:pass
         time.sleep(2)
 
-schedule.every().day.at("13:00").do(run)
-schedule.every().day.at("16:30").do(run)
-schedule.every().day.at("23:30").do(run)
+def servidor():
+    port=int(os.environ.get("PORT",8080))
+    app.run(host="0.0.0.0",port=port,use_reloader=False)
 
-send("✅*Pump Radar v7.3*|Coinbase|H1+H4|Fib|ROC")
+# Scheduler robusto — verifica hora en cada ciclo
+def scheduler():
+    ultima=""
+    while True:
+        hora=datetime.now(Z).strftime("%H:%M")
+        if hora in["13:00","16:30","23:30"]and hora!=ultima:
+            ultima=hora
+            run()
+        time.sleep(30)
+
+send("✅*Pump Radar v7.4*|Coinbase|H1+H4|Fib|ROC|Scheduler robusto")
 run(forzar=True)
 threading.Thread(target=listen,daemon=True).start()
-while True:schedule.run_pending();time.sleep(30)
+threading.Thread(target=scheduler,daemon=True).start()
+threading.Thread(target=servidor,daemon=True).start()
+while True:time.sleep(60)
